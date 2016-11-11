@@ -1,0 +1,483 @@
+swagger: "2.0"
+
+info:
+  version: 0.0.1
+  title: YADAGE - Workflow Engine API
+  description: API to query and manipulate workflows managed by the A DAG
+    Excecutor (YADAGE) Workflow Engine
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+
+schemes:
+  - http
+host: cds-swg1.cims.nyu.edu:5006
+basePath: /yadage/api/v1
+
+paths:
+    /:
+        get:
+            summary: Welcome
+            description: Basic overview of the Web Service
+            operationId: welcome
+            tags:
+                - welcome
+            produces:
+              - application/json
+            responses:
+                200:
+                    description: Simple descriptive object
+                    schema:
+                        type: object
+                        required:
+                            - name
+                            - links
+                        properties:
+                            name:
+                                type: string
+                            links:
+                                type: array
+                                items:
+                                    $ref: "#/definitions/Reference"
+    /files/{filePath}:
+        get:
+            summary: Get workflow files
+            description: Get static file from workflow working directory
+            operationId: sendFile
+            tags:
+                - files
+            parameters:
+                - name: filePath
+                  in: path
+                  required: true
+                  description: Relative file path
+                  type: string
+            responses:
+                200:
+                    description: The requested file
+                    schema:
+                        type: file
+                404:
+                    description: File not found
+    /workflows:
+        get:
+            summary: List workflows
+            description: Returns a list of all workflows in the repository
+            operationId: listWorkflows
+            tags:
+                - workflow
+            produces:
+                - application/json
+            responses:
+                200:
+                    description: A list of workflows
+                    schema:
+                        type: object
+                        required:
+                            - workflows
+                        properties:
+                            workflows:
+                                type: array
+                                items:
+                                    $ref: "#/definitions/WorkflowDescriptor"
+        post:
+            summary: Submit a RECAST request
+            description: Creates a new workflow instance from a given template
+            operationId: createWorkflow
+            tags:
+                - workflow
+            parameters:
+                - in: body
+                  name: body
+                  required: true
+                  description: URL of workflow template
+                  schema:
+                      type: object
+                      required:
+                          - template
+                      properties:
+                        template:
+                              type: string
+                        name:
+                            type: string
+                        parameters:
+                            type: array
+                            items:
+                                type: object
+                                required:
+                                    - key
+                                    - value
+                                properties:
+                                    key:
+                                        type: string
+                                    value:
+                                        type: string
+            produces:
+                - application/json
+            responses:
+                200:
+                    description: The new workflow descriptor
+                    schema:
+                        type: object
+                        $ref: "#/definitions/WorkflowDescriptor"
+    /workflows/{workflowIdentifier}:
+        get:
+            summary: Get current workflow state
+            description: Returns the current state (e.g., nodes, edges, and open tasks) for a workflow
+            operationId: getWorkflow
+            tags:
+                - workflow
+            parameters:
+                - name: workflowIdentifier
+                  in: path
+                  required: true
+                  description: Unique workflow identifier
+                  type: string
+            produces:
+                - application/json
+            responses:
+                200:
+                    description: A workflow state
+                    schema:
+                        type: object
+                        $ref: "#/definitions/WorkflowInstance"
+                404:
+                    description: Unknown workflow
+        delete:
+            summary: Delete workflow
+            description: Delete a workflow and all of its resources
+            operationId: deleteWorkflow
+            tags:
+                - workflow
+            parameters:
+                - name: workflowIdentifier
+                  in: path
+                  required: true
+                  description: Unique workflow identifier
+                  type: string
+            produces:
+                - application/json
+            responses:
+                204:
+                    description: Empty response indicating success
+                404:
+                    description: Unknown workflow
+    /workflows/{workflowIdentifier}/apply:
+        post:
+            summary: Extend workflow graph
+            description: Extend workflow graph with a set of applicable rules
+            operationId: applyRules
+            tags:
+                - workflow
+            parameters:
+                - name: workflowIdentifier
+                  in: path
+                  required: true
+                  description: Unique workflow identifier
+                  type: string
+                - name: body
+                  in: body
+                  required: true
+                  description: List of rule instances to extend workflow graph
+                  schema:
+                    type: object
+                    required:
+                        - rules
+                    properties:
+                        rules:
+                            type: array
+                            items:
+                                type: string
+            produces:
+                - application/json
+            responses:
+                200:
+                    description: New workflow state
+                    schema:
+                        type: object
+                        $ref: "#/definitions/WorkflowDescriptor"
+                400:
+                    description: Invalid request
+                404:
+                    description: Unknown workflow
+    /workflows/{workflowIdentifier}/files:
+        get:
+            summary: List workflow files
+            description: Get listing of contents in workflow working directory
+            operationId: getWorkflowFiles
+            tags:
+                - workflow
+            parameters:
+                - name: workflowIdentifier
+                  in: path
+                  required: true
+                  description: Unique workflow identifier
+                  type: string
+            produces:
+                - application/json
+            responses:
+                200:
+                    description: Recursive directory listing
+                    schema:
+                        type: object
+                        $ref: "#/definitions/Directory"
+                404:
+                    description: Unknown workflow
+    /workflows/{workflowIdentifier}/submit:
+        post:
+            summary: Submit tasks for execution
+            description: Submit set of runnable nodes for execution.
+            operationId: submitTasks
+            tags:
+                - workflow
+            parameters:
+                - name: workflowIdentifier
+                  in: path
+                  required: true
+                  description: Unique workflow identifier
+                  type: string
+                - name: body
+                  in: body
+                  required: true
+                  description: List of node identifier
+                  schema:
+                    type: object
+                    required:
+                        - nodes
+                    properties:
+                        nodes:
+                            type: array
+                            items:
+                                type: string
+            produces:
+                - application/json
+            responses:
+                200:
+                    description: New workflow state
+                    schema:
+                        type: object
+                        $ref: "#/definitions/WorkflowDescriptor"
+                400:
+                    description: Invalid request
+                404:
+                    description: Unknown workflow
+definitions:
+    Activity:
+        required:
+            - id
+            - state
+            - task
+            - timestamps
+            - links
+        properties:
+            id:
+                type: string
+            state:
+                type: string
+            task:
+                type: object
+                $ref: "#/definitions/Task"
+            proxy:
+                type: object
+                $ref: "#/definitions/Proxy"
+            timestamps:
+                type: object
+                $ref: "#/definitions/NodeTimestamps"
+            links:
+                type: array
+                items:
+                    $ref: "#/definitions/Reference"
+    Dependency:
+        type: object
+        required:
+            - dependency_type
+            - expressions
+        properties:
+            dependency_type:
+                type: string
+            expressions:
+                type: array
+                items:
+                    type: string
+    Directory:
+        type: object
+        required:
+            - files
+        properties:
+            files:
+                type: array
+                items:
+                    $ref : "#/definitions/File"
+    File:
+        type: object
+        required:
+            - type
+            - name
+        properties:
+            type:
+                type: string
+            name:
+                type: string
+            href:
+                type: string
+            files:
+                type: array
+                items:
+                    $ref: "#/defintions/File"
+    Info:
+        type: object
+        required:
+            - scheduler_type
+            - step
+        properties:
+            parameters:
+                type: object
+                properties:
+                    key:
+                        type: string
+                    value:
+                        type: object
+            scheduler_type:
+                type: string
+            step:
+                type: object
+    Node:
+        required:
+            - id
+            - name
+            - state
+            - timestamps
+        properties:
+            id:
+                type: string
+            name:
+                type: string
+            state:
+                type: string
+            timestamps:
+                type: object
+                $ref: "#/definitions/NodeTimestamps"
+    NodeTimestamps:
+        type: object
+        required:
+            - defined
+        properties:
+            defined:
+                type: string
+            ready by:
+                type: string
+            submit:
+                type: string
+    OffsetRule:
+        required:
+            - id
+            - type
+            - offset
+            - rule
+        properties:
+            id:
+                type: string
+            type:
+                type: string
+            offset:
+                type: string
+            rule:
+                $ref: "#/definitions/Rule"
+    Rule:
+        type: object
+        required:
+            - name
+            - type
+            - dependencies
+            - info
+            - step
+        properties:
+            name:
+                type: string
+            type:
+                type: string
+            info:
+                $ref: "#/definitions/Info"
+            dependencies:
+                type: array
+                items:
+                    $ref: "#/definitions/Dependency"
+            context:
+                type: object
+    Reference:
+        type: object
+        required:
+            - rel
+            - href
+        properties:
+            rel:
+                type: string
+            href:
+                type: string
+    WorkflowDescriptor:
+        required:
+            - id
+            - name
+            - state
+            - links
+        properties:
+            id:
+                type: string
+            name:
+                type: string
+            state:
+                type: string
+            links:
+                type: array
+                items:
+                    $ref: "#/definitions/Reference"
+    WorkflowInstance:
+        required:
+            - id
+            - name
+            - state
+            - dag
+            - rules
+            - applied
+            - applicableRules
+            - links
+        properties:
+            id:
+                type: string
+            name:
+                type: string
+            state:
+                type: string
+            dag:
+                type: object
+                required:
+                    - nodes
+                    - edges
+                properties:
+                    nodes:
+                        type: array
+                        items:
+                            $ref: "#/definitions/Node"
+                    edges:
+                        type: array
+                        items:
+                            type: array
+                            items:
+                                type: string
+
+            rules:
+                type: array
+                items:
+                    $ref: "#/definitions/OffsetRule"
+            applied:
+                type: array
+                items:
+                    $ref: "#/definitions/OffsetRule"
+            applicableRules:
+                type: array
+                items:
+                    type: string
+            links:
+                type: array
+                items:
+                    $ref: "#/definitions/Reference"

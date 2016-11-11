@@ -1,0 +1,9 @@
+adage
+cap-schemas
+packtivity
+yadage
+flask
+flask-cors
+pymongo
+celery[redis]==3.1.24
+

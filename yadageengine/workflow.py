@@ -183,7 +183,7 @@ class WorkflowInstance(WorkflowDescriptor):
     submittable_nodes : List(string)
         List of submittable nodes identifier
     """
-    def __init__(self, identifier, name, state, dag, rules, applied_rules, applicable_rules, submittable_nodes):
+    def __init__(self, identifier, name, state, dag, rules, applied_rules, applicable_rules, submittable_nodes, stepsbystage, bookkeeping):
         """Initialize the identfifier, name, state, dag, rules, applied rules
         and applicable rule identifier. At this stage all ADAGE objects are
         simply Json objects.
@@ -206,6 +206,10 @@ class WorkflowInstance(WorkflowDescriptor):
             List of applicable rules identifier
         submittable_nodes : List(string)
             List of submittable nodes identifier
+        stepsbystage
+            List of steps
+        bookkeeping:
+            Book keeping information about rules and steps
         """
         super(WorkflowInstance, self).__init__(identifier, name, state)
         self.dag = dag
@@ -213,3 +217,5 @@ class WorkflowInstance(WorkflowDescriptor):
         self.applied_rules = applied_rules
         self.applicable_rules = applicable_rules
         self.submittable_nodes = submittable_nodes
+        self.stepsbystage = stepsbystage
+        self.bookkeeping = bookkeeping

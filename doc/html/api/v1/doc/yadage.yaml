@@ -11,8 +11,8 @@ info:
 
 schemes:
   - http
-host: cds-swg1.cims.nyu.edu:5006
-basePath: /yadage/api/v1
+host: cds-swg1.cims.nyu.edu
+basePath: /yadage-engine/api/v1
 
 paths:
     /:
@@ -81,7 +81,7 @@ paths:
                                 items:
                                     $ref: "#/definitions/WorkflowDescriptor"
         post:
-            summary: Submit a RECAST request
+            summary: Submit workflow
             description: Creates a new workflow instance from a given template
             operationId: createWorkflow
             tags:

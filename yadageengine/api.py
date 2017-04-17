@@ -271,7 +271,9 @@ class WebServiceAPI(object):
             'rules' : workflow.rules,
             'applied' : workflow.applied_rules,
             'applicableRules' : workflow.applicable_rules,
-            'submittableNodes' : workflow.submittable_nodes
+            'submittableNodes' : workflow.submittable_nodes,
+            'stepsbystage' : workflow.stepsbystage,
+            'bookkeeping' : workflow.bookkeeping
         }
         return add_self_reference(wf_descriptor, self.urls.get_workflow_url(workflow.identifier))
 

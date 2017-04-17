@@ -260,7 +260,9 @@ class YADAGEEngine:
             workflow_inst.workflow_json['rules'],
             workflow_inst.workflow_json['applied'],
             applicable_rules,
-            submittable_nodes
+            submittable_nodes,
+            workflow_inst.workflow_json['stepsbystage'],
+            workflow_inst.workflow_json['bookkeeping']
         )
 
     def get_workflow_objects(self, workflow_id):
@@ -375,8 +377,8 @@ class YADAGEEngine:
             # Create an entry for each node in the task repository before
             # submitting to the backend for execution
             for node in nodes:
-                self.task_manager.create_task(workflow_id, node.identifier)
                 adage.submit_node(node, self.backend)
+                self.task_manager.create_task(workflow_id, node.identifier)
             # Get the state of the workflow and update the workflow in the database.
             state = self.get_workflow_state(yadage_workflow)
             self.db.update_workflow(

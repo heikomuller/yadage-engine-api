@@ -33,7 +33,7 @@ from repository import MongoDBWorkflowRepository
 
 SERVER_URL = 'http://localhost'
 PORT = 5006
-APP_PATH = '/yadage/api/v1'
+APP_PATH = '/yadage-engine/api/v1'
 
 # Base directory for all workflow files
 WORK_BASE = '../../backend/data/'

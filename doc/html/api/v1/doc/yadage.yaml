@@ -75,11 +75,16 @@ paths:
                         type: object
                         required:
                             - workflows
+                            - links
                         properties:
                             workflows:
                                 type: array
                                 items:
                                     $ref: "#/definitions/WorkflowDescriptor"
+                            links:
+                                type: array
+                                items:
+                                    $ref: "#/definitions/Reference"
         post:
             summary: Submit workflow
             description: Creates a new workflow instance from a given template

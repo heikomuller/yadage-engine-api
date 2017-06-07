@@ -1,22 +1,22 @@
-"""YADAGE Server Engine
+"""Yadage Workflow Engine API
 
-Contains classes and methods for the main YADAGE workflow instance manager
-that stores workflows and orchestrates their execution.
+The engine API is a wrapper around the different components that are necessary
+to implement a persistent workflow execution engine.
+
+The workflow repository is used as persistent storage backend for workflow
+instances. The default implementation of the engine API uses MongoDB as
+storage backend.
+
+The engine returns serialized resources, i.e., dictionaries.
 """
 
-from abc import abstractmethod
-import adage
-import adage.dagstate as dagstate
-import adage.nodestate as nodestate
+import json
 import os
 import shutil
-import threading
-import uuid
-import yadage.backends.celeryapp
-from yadage.yadagemodels import YadageWorkflow
+import urllib
 
-from workflow import WorkflowInstance
-from workflow import WORKFLOW_RUNNING, WORKFLOW_WAITING, WORKFLOW_FAILED, WORKFLOW_SUCCESS
+from hateoas import UrlFactory, self_reference, hateoas_reference, HATEOAS_LINKS
+from workflow import WorkflowRepository
 
 
 # ------------------------------------------------------------------------------
@@ -25,147 +25,170 @@ from workflow import WORKFLOW_RUNNING, WORKFLOW_WAITING, WORKFLOW_FAILED, WORKFL
 #
 # ------------------------------------------------------------------------------
 
-class YADAGEEngine:
-    """ YADAGE workflow engine used to manage and manipulate workflows. The
-    engine is a wrapper around a workflow repository that store workflow
+class YADAGEEngine(object):
+    """ YADAGE workflow engine is used to manage and manipulate workflows. The
+    engine is a wrapper around a workflow repository that stores workflow
     instances, the Yadage backend used for task execution, and a task manager
     that maintains information about submitted tasks.
 
-    The state of nodes (and therefore workflows) in the repository does not
-    get automatically updated when a task finishes. Instead, whenever a
-    workflow instance is accessed, the engine first checks whether any submitted
-    task for the workflow have finished and updates the workflow state in the
-    repository.
+    Attributes
+    ----------
+    db : workflow.WorkflowRepository
+        Repository of managed workflows
+    description : dict
+        Serialization of the Web service description
+    urls : hateoas.URLFactory
+        Factory for resource urls
+    workflow_dir : string
+        Base directory for all workflow files
     """
-    def __init__(self, workflow_db, yadage_backend, task_manager, backend_proxy_cls, work_dir):
-        """Initialize workflow engine. Provide a workflow manager and the
-        path to the global work directory shared by all workflows.
+    def __init__(self, config):
+        """Initialize the API from a given configuration object. Expects the
+        following configuration properties:
 
-        Parameters
-        ----------
-        workflow_db : workflow.WorkflowRepository
-            Workflow repository manager
-        yadage_backend : yadage.backends.AdagePacktivityBackendBase
-            Yadage backend for workflow execution
-        task_manager : tasks.taskManager
-            Task manager for submitted and running tasks
-        backend_proxy_cls : *yadage.packtivitybackend.AdagePacktivityBackendBase
-            Reference to class of task proxies used when instantiating Yadage
-            workflows.
-        work_dir : string
-            Path to global work directory for workflows.
+        * server.apppath : Application path part of the Url to access the app
+        * server.url : Base Url of the server where the app is running
+        * server.port: Port the server is running on
+        * app.doc : Url to web service documentation
+        * db.workdir : Path to local directory for workflow files
+        * mongo.db : Name of MongoDB database containing workflow state information
+        * mongo.uri (optional): Uri containing MongoDB host and port
         """
-        self.db = workflow_db
-        self.backend = yadage_backend
-        self.task_manager = task_manager
-        self.backend_proxy_cls = backend_proxy_cls
-        self.work_dir = os.path.abspath(work_dir)
-        # Set the lock object for the manager
-        self.lock = threading.Lock()
+        # Initialize the workflow repository
+        self.db = WorkflowRepository(config)
+        # Initialize the Url Factory with the application Url
+        base_url = config['server.url']
+        if base_url.endswith('/'):
+            base_url = base_url[:-1]
+        server_port = config['server.port']
+        if server_port != 80:
+            base_url += ':' + str(server_port)
+        base_url += config['server.apppath'] + '/'
+        self.urls = UrlFactory(base_url)
+
+        # Base directory for all workflow files. Create the directory if it does
+        # not exist.
+        self.workflow_dir = os.path.abspath(config['db.workdir'])
+        if not os.access(self.workflow_dir, os.F_OK):
+            os.makedirs(self.workflow_dir)
+
+        # The workflows listing Url is also used as Url for submitting workflow
+        # run requests
+        action_url =  self.urls.workflow_list_url()
+        self.description = {
+            'name': config['app.name'],
+            HATEOAS_LINKS : [
+                self_reference(self.urls.base_url),
+                hateoas_reference('doc', config['app.doc']),
+                hateoas_reference('workflows.list', action_url),
+                hateoas_reference('workflows.submit', action_url)
+            ]
+        }
 
     def apply_rules(self, workflow_id, rule_instances):
         """Apply a given set of rule instances to the specified workflow
-        instance using the default backend.
+        instance.
+
+        Raises ValueError if any of the elected rules is not applicable. The
+        result is None if the given workflow does not exist.
 
         Parameters
         ----------
         workflow_id : string
             Unique workflow identifier
-        rule_instances : List(string)
-            List of rule identifier
+        rule_instances : list(string)
+            List of rule identifiers
 
         Returns
         -------
-        Boolean
-            True, if all rules where applied successfully.
+        dict
+            Workflow instance or None
         """
-        # Use locking to ensure proper concurrency handling.
-        with self.lock:
-            # Get the Yadage workflow and workflow instance from the repository.
-            # Return None if workflow does not exist.
-            yadage_workflow, workflow_inst = self.get_current_workflow_objects(workflow_id)
-            if workflow_inst is None:
-                return False
-            # Apply each rule in the given rule instance set. Return False if
-            # one of the rules could not be applied (i.e., does not exist).
-            for rule_id in rule_instances:
-                # Find the rule that is referenced by the rule instance. Keep
-                # track of the rule index so we can remove it from the rule
-                # list. Return False if rule not found.
-                ref_rule = None
-                rule_index = 0
-                for rule in yadage_workflow.rules:
-                    if rule.identifier == rule_id:
-                        ref_rule = rule
-                        break
-                    rule_index += 1
-                if ref_rule is None:
-                    return False
-                # Remove the rule from the list of rules in the workflow and
-                # apply the rule. Make sure to add the applied rules to the list
-                # of applied rules in the workflow.
-                del yadage_workflow.rules[rule_index]
-                ref_rule.apply(yadage_workflow)
-                yadage_workflow.applied_rules.append(ref_rule)
-            # Update workflow in the repository. Note that state should not
-            # have changed by just applying rules.
-            self.db.update_workflow(
-                workflow_id,
-                workflow_inst.name,
-                workflow_inst.state,
-                yadage_workflow.json()
-            )
-            return True
+        # Get the workflow object. Return None if workflow does not exist.
+        workflow = self.db.get_workflow(workflow_id)
+        if workflow is None:
+            return None
+        # Apply selected rules. Will throw ValueError if any of the given rules
+        # is not applicable
+        workflow.apply_rules(rule_instances)
+        # Reload workflow object to get updated program state
+        return self.get_workflow(workflow_id)
 
-    def create_workflow(self, workflow_def, name, init_data={}):
-        """Create a new workflow instance.
+    def create_workflow(self, workflow_template_url, parameters={}, name=None):
+        """Create a new workflow instance from the given workflow template.
+
+        Raises a ValueError if the provided workflow parameter set is invalid.
 
         Parameters
         ----------
-        workflow_def : Json object
-            Json object representing workflow template
-        name : string
-            User-provided name of the workflow
-        init_data : Dictionary
+        workflow_template_url : string
+            Url for workflow template
+        parameters,optional : Dictionary
             Dictionary of user-provided arguments for workflow instantiation
+        name : string, optional
+            User-provided name of the workflow. If no name is provided the
+            template name is used as workflow name.
 
         Returns
         -------
-        workflow.WorkflowDescriptor
-            Descriptor for created workflow
+        dict
+            Workflow instance
         """
-        # Generate a unique identifier for the new workflow instance
-        identifier = str(uuid.uuid4())
-        # Create root context for new workflow instance. Will create a new
-        # directory in the work base directory with the workflow identifier as
-        # directory name
-        workdir = os.path.join(self.work_dir, identifier)
-        os.makedirs(workdir)
-        root_context = {
-            'readwrite': [workdir],
-            'readonly': []
-        }
-        # Create YADAGE Workflow from the given workflow template. Initialize
-        # workflow with optional inittialization parameters.
-        workflow = YadageWorkflow.createFromJSON(workflow_def, root_context)
-        workflow.view().init(init_data)
-        workflow_json = workflow.json()
-        # The initial workflow state is WAITING. Change this if we allow auto-
-        # apply and submit.
-        state = WORKFLOW_WAITING
-        # Store workflow in the associated instance database and return the
-        # workflow descriptor
-        return self.db.create_workflow(
-            identifier,
-            name,
-            state,
-            workflow_json
+        # Read the template at the given template URL
+        workflow_def = json.loads(urllib.urlopen(workflow_template_url).read())
+        # Construct dictionary of input data
+        init_data = {}
+        if 'parameters' in workflow_def:
+            for para in workflow_def['parameters']:
+                para_key = para['name']
+                para_value = None
+                if para_key in parameters:
+                    para_value = parameters[para_key]
+                elif 'default' in para:
+                    para_value = para['default']
+                else:
+                    raise ValueError('missing value for parameter: ' + para_key)
+                # TODO: Convert parameter values from strings to requested type
+                if para['type'] == 'int':
+                    para_value = int(para_value)
+                elif para['type'] == 'float':
+                    para_value = float(para_value)
+                elif para['type'] == 'array':
+                    value_list = para_value.split(',')
+                    para_value = []
+                    for val in value_list:
+                        if para['items'] == 'int':
+                            para_value.append(int(val))
+                        elif para['type'] == 'float':
+                            para_value.append(float(val))
+                        elif para['type'] == 'string':
+                            para_value.append(val)
+                        else:
+                            raise ValueError('missing value for list item: ' + val)
+                elif para['type'] != 'string':
+                    raise ValueError('unknown parameter type: ' + para['type'])
+                init_data[para_key] = para_value
+        # Use template name if no workflow name was provided or the give name
+        # is empty
+        workflow_name = name
+        if not workflow_name is None:
+            if workflow_name == '':
+                workflow_name = str(workflow_def['name'])
+        else:
+            workflow_name = str(workflow_def['name'])
+        # Create the workflow and return descriptor
+        return serialize_workflow(
+            self.db.create_workflow(
+                workflow_def['schema'],
+                workflow_name,
+                init_data
+            ),
+            self.urls
         )
 
     def delete_workflow(self, workflow_id):
-        """Delete workflow with the given identifier. If workflow existed,
-        remove all files associated with the workflow from the shared file
-        system.
+        """Delete workflow with the given identifier. Removes workflow from
+        workflow repository as well as all files associated with the workflow.
 
         Parameters
         ----------
@@ -175,54 +198,31 @@ class YADAGEEngine:
         Returns
         -------
         Boolean
-            True, if worlflow deleted, False if not found.
+            True, if worlflow was deleted, False if not found.
         """
-        # Use locking avoid deleting a workflow that is currently being
-        # manipulated by another thread.
-        with self.lock:
-            if self.db.delete_workflow(workflow_id):
-                # Delete tasks associated with the workflow
-                self.task_manager.delete_tasks(workflow_id)
-                # Delete all files associated with the workflow
-                workdir = os.path.join(self.work_dir, workflow_id)
-                shutil.rmtree(workdir)
-                return True
-            else:
-                return False
+        # Remove workflow directory if workflow exists
+        if self.db.delete_workflow(workflow_id):
+            shutil.rmtree(os.path.join(self.workflow_dir, workflow_id))
+            return True
+        else:
+            return False
 
-    def get_current_workflow_objects(self, workflow_id):
-        """Retrieve Yadage workflow and workflow instance object from the
-        repository. Ensure that workflow state is up to date. This method may
-        modify the workflow instance in the repository. Assumes that the
-        calling thread holds the lock on the Yadage engine to ensure proper
-        behaviour in case of concurrent access.
-
-        Parameters
-        ----------
-        workflow_id : string
-            Unique workflow identifier
+    def get_description(self):
+        """Descriptive object for Web API. Contains the API name and a list of
+        references to list workflows and to submit new workflows. Also contains
+        a references to the API documentation.
 
         Returns
         -------
-        yadage.yadagemodels.YadageWorkflow. workflow.WorkflowInstance
-            Tuple of Yadage workflow object and workflow instance object. The
-            result is (None, None), if no workflow with given identifier exists
-            in the repository.
+        dict
+            Dictionary containing API name and list of HATEOAS references
         """
-        # Retrieve the unmodified workflow objects from the repository. Return
-        # None if either is None.
-        yadage_workflow, workflow_inst = self.get_workflow_objects(workflow_id)
-        if yadage_workflow is None or workflow_inst is None:
-            return None, None
-        # Check if the workflow has any submittted tasks, If yes, update the
-        # workflow state.
-        if self.task_manager.has_tasks(workflow_id):
-            return self.update_workflow_state(yadage_workflow, workflow_inst)
-        else:
-            return yadage_workflow, workflow_inst
+        return self.description
 
     def get_workflow(self, workflow_id):
-        """Get workflow with given identifier.
+        """Get workflow instance with the given identifier.
+
+        Result is None if the workflow does not exist.
 
         Parameters
         ----------
@@ -231,244 +231,215 @@ class YADAGEEngine:
 
         Returns
         -------
-        workflow.WorkflowInstance
-            Workflow instance object. Result is None if workflow does not exist.
+        dict
+            Workflow instance object or None
         """
-        # Use lock to ensure that concurrency is handled in case the workflow
-        # state needs to be updated.
-        with self.lock:
-            # Get the workflow instance from the database. Return None if it
-            # does not exist.
-            yadage_workflow, workflow_inst = self.get_current_workflow_objects(workflow_id)
-            if workflow_inst is None:
-                return None
-        # Get the list of identifier for rules that are applicable.
-        applicable_rules = []
-        for rule in reversed([x for x in yadage_workflow.rules]):
-            if rule.applicable(yadage_workflow):
-                applicable_rules.append(rule.identifier)
-        # Get list of identifier for submittable nodes
-        submittable_nodes = []
-        for node in self.submittable_nodes(yadage_workflow, workflow_id):
-            submittable_nodes.append(node.identifier)
-        # Return a full workflow instance
-        return WorkflowInstance(
-            workflow_inst.identifier,
-            workflow_inst.name,
-            workflow_inst.state,
-            workflow_inst.workflow_json['dag'],
-            workflow_inst.workflow_json['rules'],
-            workflow_inst.workflow_json['applied'],
-            applicable_rules,
-            submittable_nodes,
-            workflow_inst.workflow_json['stepsbystage'],
-            workflow_inst.workflow_json['bookkeeping']
-        )
-
-    def get_workflow_objects(self, workflow_id):
-        """Get workflow instance for given identifier. Returns a pair of Yadage
-        workflow and workflow instance. This is a read-only operation and
-        therefore no lock is aquired.
-
-        Parameters
-        ----------
-        workflow_id : string
-            Unique workflow identifier
-
-        Returns
-        -------
-        yadage.yadagemodels.YadageWorkflow. workflow.WorkflowInstance
-            Tuple of Yadage workflow object and workflow instance object. The
-            result is (None, None), if no workflow with given identifier exists
-            in the repository.
-        """
-        # Get the workflow instance from the database. Return None if it does
-        # not exist. Otherwise, call implementation specific instantiation
-        # method.
-        workflow_inst = self.db.get_workflow(workflow_id)
-        if not workflow_inst is None:
-            yadage.backends.celeryapp.app.set_current()
-            return YadageWorkflow.fromJSON(
-                workflow_inst.workflow_json,
-                self.backend_proxy_cls,
-                backend=self.backend
-            ), workflow_inst
-        else:
-            return None, None
-
-    @staticmethod
-    def get_workflow_state(workflow):
-        """Derive the state of the workflow from the state of the nodes in the
-        workflow DAG and the set of workflow rules.
-
-        Parameters
-        ----------
-        workflow : yadage.yadagemodels.YadageWorkflow
-
-        Returns
-        -------
-        WorkflowState
-            State object for given workflow
-        """
-        dag = workflow.dag
-        rules = workflow.rules
-        # If there are failed nodes the workflow satet is failed. If there are
-        # running nodes then the state is running. Otherwiese, the workflow
-        # is idele if there are applicab;e nodes or submittable tasks.
-        state = WORKFLOW_WAITING if len(workflow.rules) > 0 else WORKFLOW_SUCCESS
-        for node_id in dag.nodes():
-            node = dag.getNode(node_id)
-            if node.state == nodestate.FAILED:
-                state = WORKFLOW_FAILED
-                break
-            if node.state == nodestate.RUNNING:
-                state = WORKFLOW_RUNNING
-            if node.state == nodestate.DEFINED:
-                if state != WORKFLOW_FAILED and state != WORKFLOW_RUNNING:
-                    state = WORKFLOW_WAITING
-        return state
+        return serialize_workflow(self.db.get_workflow(workflow_id), self.urls)
 
     def list_workflows(self):
         """Get a list of all workflows currently managed by the engine.
 
         Returns
         -------
-        List(workflow.WorkflowDescriptor)
-            List of descriptors for all workflows in the repository.
+        dict
+            Listing of workflow descriptors
         """
-        with self.lock:
-            # Update the state of all workflows that have running tasks
-            for workflow_id in self.task_manager.list_workflows():
-                yadage_workflow, workflow_inst = self.get_workflow_objects(workflow_id)
-                if not yadage_workflow is None and not workflow_inst is None:
-                    self.update_workflow_state(yadage_workflow, workflow_inst)
-                else:
-                    self.task_manager.delete_tasks(workflow_id)
-        return self.db.list_workflows()
+        return {
+            'workflows': [
+                serialize_workflow_descriptor(wf, self.urls)
+                    for wf in self.db.list_workflows()
+            ],
+            HATEOAS_LINKS: [
+                self_reference(self.urls.workflow_list_url())
+            ]
+        }
+
+    def list_workflow_files(self, workflow_id):
+        """Get recursive directory listing for workflow.
+
+        Result is None if workflow does not exist.
+
+        Parameters
+        ----------
+        workflow_id : string
+            Unique identifier of workflow for which the files and file structure
+            is returned.
+
+        Returns
+        -------
+        dict
+            Listing of workflow files or None
+        """
+        return {'files' : list_directory(self.workflow_dir, workflow_id)}
 
     def submit_nodes(self, workflow_id, node_ids):
         """Submit a set of tasks (referenced by their node identifier) for the
         specified workflow instance using the default backend.
 
-        workflow_id : string
-            Unique workflow identifier
-        node_ids : List(string)
-
-        Returns
-        -------
-        Boolean
-            True, if all tasks where submitted successfully
-        """
-        # Use locking to ensure proper concurrency handling.
-        with self.lock:
-            # Get the workflow instance from the database. Return False if it
-            # does not exist.
-            yadage_workflow, workflow_inst = self.get_current_workflow_objects(workflow_id)
-            if workflow_inst is None:
-                return False
-            # Filter submitted nodes from set of submittable nodes
-            nodes = []
-            for node in self.submittable_nodes(yadage_workflow, workflow_id):
-                if node.identifier in node_ids:
-                    nodes.append(node)
-            # TODO: What should happen if unknown nodes are encountered?
-            if len(nodes) != len(node_ids):
-                return False
-            # Create an entry for each node in the task repository before
-            # submitting to the backend for execution
-            for node in nodes:
-                adage.submit_node(node, self.backend)
-                self.task_manager.create_task(workflow_id, node.identifier)
-            # Get the state of the workflow and update the workflow in the database.
-            state = self.get_workflow_state(yadage_workflow)
-            self.db.update_workflow(
-                workflow_id,
-                workflow_inst.name,
-                state,
-                yadage_workflow.json()
-            )
-            return True
-
-    def submittable_nodes(self, workflow, workflow_id):
-        """Get a list of all node objects that are submittable in the given
-        workflow.
+        Result is None if workflow does not exist. Raises ValueError if any of
+        the selected nodes is not submittable.
 
         Parameters
         ----------
-        workflow : yadage.yadagemodels.YadageWorkflow
-            Yadage workflow object
         workflow_id : string
             Unique workflow identifier
+        node_ids : list(string)
+            List of identifier for nodes to be submitted
 
         Returns
         -------
-        List(Node)
-            List of node objects
+        dict
+            Workflow instance or None
         """
-        # Get list of pending tasks to avoid including these tasks in the list
-        # of submittable nodes
-        pending_nodes = self.task_manager.list_tasks(workflow_id)
-        # Get list of nodes that (1) are not pending tasks, (2) have not been
-        # submitted yet, and (3) have all upstream dependencies fulfilled.
-        nodes = []
-        for node_id in workflow.dag.nodes():
-            if node_id in pending_nodes:
-                continue
-            node = workflow.dag.getNode(node_id)
-            if node.submit_time:
-                continue;
-            if dagstate.upstream_ok(workflow.dag, node):
-                nodes.append(node)
-        return nodes
+        # Get the workflow object. Return None if workflow does not exist.
+        workflow = self.db.get_workflow(workflow_id)
+        if workflow is None:
+            return None
+        # Apply selected rules. Will throw ValueError if any of the given rules
+        # is not applicable
+        workflow.submit_nodes(node_ids)
+        # Reload workflow object to get updated program state
+        return self.get_workflow(workflow_id)
 
-    def update_workflow_state(self, yadage_workflow, workflow_inst):
-        """Update the state of a given workflow in the repository. Start by
-        retrieving the list of all submitted and running nodes for the workflow.
-        Check the state for each of these nodes. If either node is no longer
-        running, update workflow in repository.
 
-        This method assumes that the calling method has the lock on the Yadage
-        Engine to avoid unwanted side effect due to concurrent access.
+# ------------------------------------------------------------------------------
+# Helper Methods
+# ------------------------------------------------------------------------------
 
-        Parameters
-        ----------
-        yadage_workflow : yadage.yadagemodels.YadageWorkflow
-            Yadage workflow object
-        workflow_inst :  workflow.WorkflowInstance
-            Workflow  instance object in repository
+def list_directory(directory_name, relative_path):
+    """Recursive listing of all files in the given directory.
 
-        Returns
-        -------
-        yadage.yadagemodels.YadageWorkflow. workflow.WorkflowInstance
-            Tuple of Yadage workflow object and workflow instance object. The
-            result is (None, None), if no workflow with given identifier exists
-            in the repository.
-        """
-        # The modified workflow instance. Initially set to the current instance
-        modified_workflow_inst = workflow_inst
-        # Get the list of tasks for the given workflow.
-        tasks = self.task_manager.list_tasks(workflow_inst.identifier)
-        if len(tasks) > 0:
-            # Keep track if any submitted task has finished
-            has_changes = False
-            for task_id in tasks:
-                node = yadage_workflow.dag.getNode(task_id)
-                if not node is None:
-                    if node.state in[nodestate.SUCCESS, nodestate.FAILED]:
-                        # Node state must have changed. Remove task from repository
-                        self.task_manager.delete_task(workflow_inst.identifier, task_id)
-                        has_changes = True
-                else:
-                    # Delete entry for non-existing node
-                    db.task_manager.delete_task(workflow_inst.identifier, task_id)
-            # Only need to update the workflow instance in the repository if at
-            # least one of the nodes changed state
-            if has_changes:
-                state = self.get_workflow_state(yadage_workflow)
-                modified_workflow_inst = self.db.update_workflow(
-                    workflow_inst.identifier,
-                    workflow_inst.name,
-                    state,
-                    yadage_workflow.json()
-                )
-        return yadage_workflow, modified_workflow_inst
+    Parameters
+    ----------
+    directory_name : string
+        Absolute path to directory that is being listed
+
+    relative_path : string
+        Path prefix of directory_name relative to a base directory that
+        contains all workflow data files.
+
+    Returns
+    -------
+    Dictionary
+        Recursive directory listing {'files':[{file}]}:
+        file : {
+            'type', : 'DIRECTORY',
+            'name': ...,
+            'files' : [{file}]
+        }
+        or
+        file : {
+            'type': 'FILE',
+            'name': ...,
+            'size': ...,
+            'href': ...
+        }
+    """
+    files = []
+    for filename in os.listdir(directory_name):
+        abs_path = os.path.join(directory_name, filename)
+        if os.path.isdir(abs_path):
+            descriptor = {
+                'type' : 'DIRECTORY',
+                'name': filename,
+                'files' : list_directory(abs_path, relative_path + '/' + filename)
+            }
+        else:
+            descriptor = {
+                'type': 'FILE',
+                'name': filename,
+                'size': os.stat(abs_path).st_size,
+                'href': urls.url_file(relative_path + '/' + filename)
+            }
+        files.append(descriptor)
+    return files
+
+
+def serialize_workflow(workflow, urls):
+    """Serilaize workflow object. Contains all information about a workflow
+    including the DAG, applicable rules, and submittable
+    nodes.
+
+    The list of references contains a self references, as well as references to
+    delete the workflow ('delete'), list workflow files ('files'), apply rules
+    ('apply'), submit nodes ('submit'), and to get a list of all worflows
+    ('list').
+
+    Returns None if workflow is not defined.
+
+    Parameters
+    ----------
+    workflow : workflow.WorkflowInstance
+        Workflow descriptor object
+
+    urls : hateoas.UrlFactory
+        Factory for resource urls
+
+    Results
+    -------
+    dict
+        Serialization of workflow object
+    """
+    # Ensure that workflow is defined
+    if workflow is None:
+        return None
+    workflow_url = urls.workflow_url(workflow.identifier)
+    return {
+        'id' : workflow.identifier,
+        'name' : workflow.name,
+        'status' : workflow.status,
+        'applicableRules' : workflow.applicable_rules,
+        'submittableNodes' : workflow.submittable_nodes,
+        'dag' : workflow.json()['dag'],
+        'rules': workflow.json()['rules'],
+        'appliedRules' : workflow.json()['applied'],
+        HATEOAS_LINKS : [
+            self_reference(workflow_url),
+            hateoas_reference('delete', workflow_url),
+            hateoas_reference(
+                'files',
+                urls.workflow_list_files_url(workflow.identifier)
+            ),
+            hateoas_reference(
+                'apply',
+                urls.workflow_apply_rules_url(workflow.identifier)
+            ),
+            hateoas_reference(
+                'submit',
+                urls.workflow_submit_nodes_url(workflow.identifier)
+            ),
+            hateoas_reference('list', urls.workflow_list_url()),
+        ]
+    }
+
+
+def serialize_workflow_descriptor(workflow, urls):
+    """Serilaize workflow descriptor. Returns a dictionary that contains the
+    workflow id, name, state, and a reference to the workflow resource.
+
+    Returns None if workflow is not defined.
+
+    Parameters
+    ----------
+    workflow : workflow.WorkflowInstance
+        Workflow descriptor object
+
+    urls : hateoas.UrlFactory
+        Factory for resource urls
+
+    Results
+    -------
+    dict
+        Serialization of workflow descriptor
+    """
+    # Ensure that workflow is defined
+    if workflow is None:
+        return None
+    return {
+        'id' : workflow.identifier,
+        'name' : workflow.name,
+        'status' : workflow.status,
+        HATEOAS_LINKS : [
+            self_reference(urls.workflow_url(workflow.identifier))
+        ]
+    }

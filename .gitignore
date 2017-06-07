@@ -1,3 +1,8 @@
 *.pyc
 *.rdb
-yadageengine/venv
+yadageengine/config.yaml
+yadageengine/venv/
+tests/data/
+yadageengine.egg-info/
+build/
+dist/

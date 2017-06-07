@@ -1,122 +1,42 @@
-"""Workflow objects managed by the YADAGE Engine and stored in the workflow
-respository."""
+"""Workflow objects managed by the Yadage Engine and stored in the workflow
+respository.
 
+Defines workflow descriptors and workflow instance objects. Descriptors contain
+basic information about workflow instances, i.e., identifier, name, and program
+execution status. Workflow instance objects contain the full information about
+the workflow including the internal execution state.
+
+The workflow repository manages and persists information about running and
+completed workflow instances. The default repository implementation uses
+MongoDB as the storage backend.
+"""
+import functools
+import os
+import uuid
+
+from bson.objectid import ObjectId
+from pymongo import MongoClient
+
+import packtivity.statecontexts.posixfs_context as statecontext
+import yadage.clihelpers as clihelpers
+from yadage.controllers import load_state_custom_deserializer, PersistentController
+from yadage.yadagemodels import YadageWorkflow
 
 # ------------------------------------------------------------------------------
 #
-# Workflow States
+# Constants
 #
 # -----------------------------------------------------------------------------
 
-class WorkflowState(object):
-    """Representation of a workflow state. At this point the state is simple
-    represented by a unique descriptive name.
-
-    Attributes
-    ----------
-    name : string
-        Text representation of workflow state
-    """
-    def __init__(self, name):
-        """Initialize the name of a workflow state.
-
-        Parameters
-        ----------
-        name : string
-            Text representation of workflow state
-        """
-        self.name = name
-
-    def __repr__(self):
-        """Unambiguous printable representation of the workflow state.
-
-        Returns
-        -------
-        string
-        """
-        return '<WorkflowState: {}>'.format(self.name)
-
-    def __str__(self):
-        """Readable printable representation of the workflow state.
-
-        Returns
-        -------
-        string
-        """
-        return self.name
-
-
-# ------------------------------------------------------------------------------
-# Workflow State Instances
-# ------------------------------------------------------------------------------
-
-"""Define possible workflow states. A workflow can be in either of four
+"""Define possible workflow statuses. A workflow can be in either of four
 different states: RUNNING (i.e., submitted task that is running), WAITING
 (i.e., waiting for user interaction), FAILED (i.e., execution of at least on
 task falied), and SUCCESS (i.e., workflow successfully completed).
 """
-WORKFLOW_RUNNING = WorkflowState('RUNNING')
-WORKFLOW_WAITING = WorkflowState('WAITING')
-WORKFLOW_FAILED  = WorkflowState('FAILED')
-WORKFLOW_SUCCESS = WorkflowState('SUCCESS')
-
-
-# ------------------------------------------------------------------------------
-# Dictionary of workflow states
-# ------------------------------------------------------------------------------
-
-WORKFLOW_STATES = {
-    'WAITING': WORKFLOW_WAITING,
-    'RUNNING': WORKFLOW_RUNNING,
-    'FAILED':  WORKFLOW_FAILED,
-    'SUCCESS': WORKFLOW_SUCCESS,
-}
-
-# ------------------------------------------------------------------------------
-#
-# Workflow Descriptor
-#
-# ------------------------------------------------------------------------------
-
-class WorkflowDescriptor(object):
-    """ Workflow descriptors maintain basic information about workflow instances
-    managed by the YADAGE server. This information includes the unique workflow
-    identifier, the descritpive (user-provided) workflow name, and the current
-    state of the workflow. More comprehensive workflow classes will inherit from
-    this base class.
-
-    While the state of a workflow can be derived from the workflow Json object,
-    storing it separately is intended to speed up the generation of workflow
-    listing containing each workflow's state in the Web API. It is expected that
-    the engine using the instance manager ensures that the state that is stored
-    with the instance is identical to the state that would be derived from the
-    Json object.
-
-    Attributes
-    ----------
-    identifier : string
-        Unique workflow identifier
-    name : string
-        User-defined workflow name
-    state : WorkflowState
-        Workflow state object
-    """
-    def __init__(self, identifier, name, state):
-        """Initialize the identfifier, name, and state of the workflow
-        descriptor.
-
-        Parameters
-        ----------
-        identifier : string
-            Unique workflow identifier
-        name : string
-            User-defined workflow name
-        state : WorkflowState
-            Workflow state object
-        """
-        self.identifier = identifier
-        self.name = name
-        self.state = state
+WORKFLOW_RUNNING ='RUNNING'
+WORKFLOW_IDLE ='IDLE'
+WORKFLOW_ERROR  = 'ERROR'
+WORKFLOW_SUCCESS = 'SUCCESS'
 
 
 # ------------------------------------------------------------------------------
@@ -125,44 +45,9 @@ class WorkflowDescriptor(object):
 #
 # ------------------------------------------------------------------------------
 
-class WorkflowDBInstance(WorkflowDescriptor):
-    """Workflow instance that is managed by a workflow instance manager. Extends
-    the workflow descriptor with the YADAGE Json representation of the workflow.
-
-    Attributes
-    ----------
-    identifier : string
-        Unique workflow identifier
-    name : string
-        User-defined workflow name
-    state : WorkflowState
-        Workflow state object
-    workflow_json : Json object
-        Json object for Yadage workflow instance
-    """
-    def __init__(self, identifier, name, state, workflow_json):
-        """Initialize the identfifier, name, state, and Json object containing
-        the YADAGE workflow representation.
-
-        Parameters
-        ----------
-        identifier : string
-            Unique workflow identifier
-        name : string
-            User-defined workflow name
-        state : WorkflowState
-            Workflow state object
-        workflow_json : Json object
-            Json object for Yadage workflow instance
-        """
-        super(WorkflowDBInstance, self).__init__(identifier, name, state)
-        self.workflow_json = workflow_json
-
-
-class WorkflowInstance(WorkflowDescriptor):
+class WorkflowInstance(object):
     """Full workflow instance object. Extends the workflow descriptor with the
-    workflow graph, list of rules, list of applied rules, and list of applicable
-    rule identifier.
+    internal state of workflow execution.
 
     Attributes
     ----------
@@ -170,52 +55,316 @@ class WorkflowInstance(WorkflowDescriptor):
         Unique workflow identifier
     name : string
         User-defined workflow name
-    state : WorkflowState
+    status : string
         Workflow state object
-    dag : Json object
-        Json serialization of Adage DAG
-    rules : Json object
-        Json serialization of workflow rules
-    applied_rules Json object
-        Json serialization of applied rules
-    applicable_rules : List(string)
-        List of applicable rules identifier
-    submittable_nodes : List(string)
-        List of submittable nodes identifier
+    json : Json object
+        Json serialization of workflow state object
+    applicable_rules : list(adage.Rule)
+        List of applicable rules
+    submittable_nodes : list(adage.AdageNode)
+        List of submittable nodes
     """
-    def __init__(self, identifier, name, state, dag, rules, applied_rules, applicable_rules, submittable_nodes, stepsbystage, bookkeeping):
+    def __init__(self, metadata, mongo_collection, backend_id='celery'):
         """Initialize the identfifier, name, state, dag, rules, applied rules
         and applicable rule identifier. At this stage all ADAGE objects are
         simply Json objects.
 
         Parameters
         ----------
-        identifier : string
-            Unique workflow identifier
+        metadata : dict
+            Metadata information including workflow id and name
+        program_state : YadageWorkflow
+            Internal state of workflow execution
+        mongo_collection : pymongo.Collection
+            MongoDB collection containing workflow state data
+        backend_id : string
+            Name of the Yadage backend
+        """
+        self.identifier = str(metadata['_id'])
+        self.name = metadata['name']
+        self.collection = mongo_collection
+        self.wflowid = ObjectId(metadata['workflow'])
+        self.deserializer = functools.partial(
+            load_state_custom_deserializer,
+            backendstring=backend_id
+        )
+        self.controller = PersistentController(self)
+        self.controller.backend = clihelpers.setupbackend_fromstring(backend_id)
+        # Get the list of identifier for rules that are applicable.
+        self.applicable_rules = self.controller.applicable_rules()
+        # Get list of identifier for submittable nodes
+        self.submittable_nodes = self.controller.submittable_nodes()
+        # Set the workflow status
+        if self.controller.validate():
+            if self.controller.finished():
+                if self.controller.successful():
+                    self.status = WORKFLOW_SUCCESS
+                else:
+                    self.status = WORKFLOW_ERROR
+            else:
+                if len(self.applicable_rules) > 0 or len(self.submittable_nodes) > 0:
+                    self.status = WORKFLOW_IDLE
+                else:
+                    self.status = WORKFLOW_RUNNING
+        else:
+            self.status = WORKFLOW_ERROR
+
+    def apply_rules(self, rule_instances):
+        """Apply a given set of rule instances.
+
+        Raises ValueError if any of the selected rules is not applicable.
+
+        Parameters
+        ----------
+        rule_instances : list(string)
+            List of rule identifier
+        """
+        # Ensure that all selected rules are applicable and that there are
+        # no duplicates in the list
+        rules = set()
+        for rule_id in rule_instances:
+            if not rule_id in self.applicable_rules:
+                raise ValueError('not applicable: ' + rule_id)
+            elif rule_id in rules:
+                raise ValueError('duplicate rule: ' + rule_id)
+            rules.add(rule_id)
+        # Apply the list of rules
+        self.controller.apply_rules(rule_instances)
+
+    def commit(self, data):
+        """Update workflow state. Implements method from
+        yadage.controllers.MongoBackedModel.
+
+        Parameters
+        ----------
+        data : yadage.YadageWorkflow
+            Yadage workflow object
+        """
+        self.collection.replace_one({'_id' : self.wflowid}, data.json())
+
+    def json(self):
+        """Retrieve workflow state. Implements method from
+        yadage.controllers.MongoBackedModel.
+        """
+        return self.collection.find_one({'_id' : self.wflowid})
+
+    def load(self):
+        """Retrieve workflow state. Implements method from
+        yadage.controllers.MongoBackedModel.
+        """
+        return self.deserializer(self.json())
+
+    def submit_nodes(self, node_instances):
+        """Submit a given set of node instances.
+
+        Raises ValueError if any of the selected nodes is not submittable.
+
+        Parameters
+        ----------
+        node_instances : list(string)
+            List of node identifier
+        """
+        # Ensure that all selected nodes are submitttable and that there are
+        # no duplicates in the list
+        nodes = set()
+        for node_id in node_instances:
+            if not node_id in self.submittable_nodes:
+                raise ValueError('not submittable: ' + node_id)
+            elif node_id in nodes:
+                raise ValueError('duplicate node: ' + node_id)
+            nodes.add(node_id)
+        # Submit the list of nodes
+        self.controller.submit_nodes(node_instances)
+
+
+# ------------------------------------------------------------------------------
+#
+# Workflow Repository
+#
+# ------------------------------------------------------------------------------
+
+class WorkflowRepository(object):
+    """Persistent implementation of a workflow repository manager using MongoDB.
+
+    Attributes
+    ----------
+    connector : MongoDBFactory
+        Connector for MongoDB database
+    workflow_dir : string
+        Base directory for all workflow files
+    """
+    def __init__(self, config):
+        """Initialize the database connector and workflow directory.
+
+        Parameters
+        ----------
+        config : dict
+            Yadage configuration parameters
+        """
+        # Initialize the MongoDB connector
+        self.store = MongoDBConnector(config)
+        # Directory for workflow files
+        self.workflow_dir = os.path.abspath(config['db.workdir'])
+
+    def create_workflow(self, workflow_template, name, init_data):
+        """Create a new workflow instance in the repository. Assigns the given
+        identifier and name to the new workflow instance.
+
+        Parameters
+        ----------
+        workflow_template : dict
+            Serialization of the workflow template
         name : string
             User-defined workflow name
-        state : WorkflowState
-            Workflow state object
-        dag : Json object
-            Json serialization of Adage DAG
-        rules : Json object
-            Json serialization of workflow rules
-        applied_rules Json object
-            Json serialization of applied rules
-        applicable_rules : List(string)
-            List of applicable rules identifier
-        submittable_nodes : List(string)
-            List of submittable nodes identifier
-        stepsbystage
-            List of steps
-        bookkeeping:
-            Book keeping information about rules and steps
+        init_data : dict
+            Dictionary of user-provided workflow arguments
+
+        Returns
+        -------
+        workflow.WorkflowInstance
+            Descriptor for workflow instance
         """
-        super(WorkflowInstance, self).__init__(identifier, name, state)
-        self.dag = dag
-        self.rules = rules
-        self.applied_rules = applied_rules
-        self.applicable_rules = applicable_rules
-        self.submittable_nodes = submittable_nodes
-        self.stepsbystage = stepsbystage
-        self.bookkeeping = bookkeeping
+        # Generate a unique identifier for the new workflow instance
+        identifier = str(uuid.uuid4())
+        # Create a new directory in the workflow base directory with the
+        # workflow identifier as the directory name.
+        workdir = os.path.join(self.workflow_dir, identifier)
+        os.makedirs(workdir)
+        rootcontext = statecontext.merge_contexts(
+            {},
+            statecontext.make_new_context(workdir)
+        )
+        # Create Yadage workflow object from template and initialize with user
+        # provided arguments
+        workflowobj = YadageWorkflow.createFromJSON(
+            workflow_template,
+            rootcontext
+        )
+        workflowobj.view().init(init_data)
+        # Connect to MongoDB. Insert workflow state inti collection workflows
+        # and metadata inti collection metadata
+        db = self.store.get_database()
+        metadata = {
+            '_id' : identifier,
+            'name' : name,
+            'workflow' : str(
+                db.workflows.insert_one(workflowobj.json()).inserted_id
+            )
+        }
+        db.metadata.insert_one(metadata)
+        return WorkflowInstance(metadata, db.workflows)
+
+    def delete_workflow(self, workflow_id):
+        """Delete workflow instance with the given identifier. The result
+        indicates whether the given workflow identifier was valid (i.e.,
+        identified an existing workflow) or not.
+
+        Parameters
+        ----------
+        workflow_id : string
+            Unique workflow identifier
+
+        Returns
+        -------
+        Boolean
+            True, if worlflow deleted, False if not found
+        """
+        # Connect to database
+        db = self.store.get_database()
+        # Retrieve metadata information for given workflow. Return False if it
+        # does not exist
+        cursor = db.metadata.find({'_id': workflow_id})
+        if cursor.count() == 0:
+            return False
+        md = cursor.next()
+        # Delete workflow and metadata
+        db.workflows.delete_one({'_id': md['workflow']})
+        db.metadata.delete_one({'_id': workflow_id})
+        return True
+
+    def get_workflow(self, workflow_id):
+        """Get workflow instance with given identifier.
+
+        Parameters
+        ----------
+        workflow_id : string
+            Unique workflow identifier
+
+        Returns
+        -------
+        workflow.WorkflowInstance
+            Workflow instance or None
+        """
+        db = self.store.get_database()
+        cursor = db.metadata.find({'_id': workflow_id})
+        if cursor.count() > 0:
+            obj = cursor.next()
+            return WorkflowInstance(obj, db.workflows)
+        else:
+            return None
+
+    def list_workflows(self, status=None):
+        """List all workflow instances in the repository. Allows to filter the
+        result by workflow status.
+
+        Parameters
+        ----------
+        status : string, optional
+            Workflow status to filter by
+
+        Returns
+        -------
+        list(WorkflowInstance)
+            Descriptors for workflow instances in the repository
+        """
+        result = []
+        # Iterate over all metadata objects and generate the workflow instances.
+        # The status filter can only be applied after that
+        db = self.store.get_database()
+        cursor = db.metadata.find()
+        for document in cursor:
+            wf = WorkflowInstance(document, db.workflows)
+            if not status is None:
+                if status != wf.status:
+                    continue
+            result.append(wf)
+        return result
+
+
+# ------------------------------------------------------------------------------
+# MongoDB Connector
+# ------------------------------------------------------------------------------
+
+class MongoDBConnector(object):
+    """Factory pattern to establish connection to the Mongo database used
+    by the Yadage Web API.
+    """
+    def __init__(self, config):
+        """Initialize the database name and connection Uri. Uses the follwing
+        parameters:
+
+        * mongo.db (optional)  : Name of MongoDB database to store workflow
+                                 information. Default is 'yadage'.
+        * mongo.uri (optional) : Connection string. Default is to connect to
+                                 local instance on default port.
+
+        Parameters
+        ----------
+        config : dict
+            Yadage configuration parameters
+        """
+        self.db_uri = config['mongo.uri'] if 'mongo.uri' in config else None
+        self.db_name = config['mongo.db'] if 'mongo.db' in config else 'yadage'
+
+    def get_database(self):
+        """Connect to MongoDB and return database object.
+
+        Returns
+        -------
+        MongoDb.database
+            MongoDB database object
+        """
+        if not self.db_uri is None:
+            return MongoClient(self.db_uri)[self.db_name]
+        else:
+            return MongoClient()[self.db_name]

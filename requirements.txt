@@ -1,8 +1,6 @@
-adage
-cap-schemas
-packtivity
-yadage>=0.8.1
-flask
-flask-cors
+flask>=0.10
+flask-cors>=3.0.2
 pymongo
-celery[redis]==3.1.24
+celery
+redis
+yadage>=0.10.8

@@ -270,7 +270,13 @@ class YADAGEEngine(object):
         dict
             Listing of workflow files or None
         """
-        return {'files' : list_directory(self.workflow_dir, workflow_id)}
+        return {
+            'files' : list_directory(
+                os.path.join(self.workflow_dir, workflow_id),
+                workflow_id,
+                self.urls
+            )
+        }
 
     def submit_nodes(self, workflow_id, node_ids):
         """Submit a set of tasks (referenced by their node identifier) for the
@@ -306,17 +312,18 @@ class YADAGEEngine(object):
 # Helper Methods
 # ------------------------------------------------------------------------------
 
-def list_directory(directory_name, relative_path):
+def list_directory(directory_name, relative_path, urls):
     """Recursive listing of all files in the given directory.
 
     Parameters
     ----------
     directory_name : string
         Absolute path to directory that is being listed
-
     relative_path : string
         Path prefix of directory_name relative to a base directory that
         contains all workflow data files.
+    urls : hateoas.UrlFactory
+        Factory for resource urls
 
     Returns
     -------
@@ -342,14 +349,14 @@ def list_directory(directory_name, relative_path):
             descriptor = {
                 'type' : 'DIRECTORY',
                 'name': filename,
-                'files' : list_directory(abs_path, relative_path + '/' + filename)
+                'files' : list_directory(abs_path, relative_path + '/' + filename, urls)
             }
         else:
             descriptor = {
                 'type': 'FILE',
                 'name': filename,
                 'size': os.stat(abs_path).st_size,
-                'href': urls.url_file(relative_path + '/' + filename)
+                'href': urls.file_url(relative_path + '/' + filename)
             }
         files.append(descriptor)
     return files
@@ -371,7 +378,6 @@ def serialize_workflow(workflow, urls):
     ----------
     workflow : workflow.WorkflowInstance
         Workflow descriptor object
-
     urls : hateoas.UrlFactory
         Factory for resource urls
 

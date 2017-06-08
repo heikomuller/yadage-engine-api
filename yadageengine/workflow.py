@@ -17,9 +17,11 @@ import uuid
 from bson.objectid import ObjectId
 from pymongo import MongoClient
 
+from packtivity.asyncbackends import CeleryBackend
 import packtivity.statecontexts.posixfs_context as statecontext
+import yadage.backends.packtivitybackend as pb
 import yadage.clihelpers as clihelpers
-from yadage.controllers import load_state_custom_deserializer, PersistentController
+from yadage.controllers import PersistentController, VariableProxy
 from yadage.yadagemodels import YadageWorkflow
 
 # ------------------------------------------------------------------------------
@@ -64,7 +66,7 @@ class WorkflowInstance(object):
     submittable_nodes : list(adage.AdageNode)
         List of submittable nodes
     """
-    def __init__(self, metadata, mongo_collection, backend_id='celery'):
+    def __init__(self, metadata, mongo_collection, backend):
         """Initialize the identfifier, name, state, dag, rules, applied rules
         and applicable rule identifier. At this stage all ADAGE objects are
         simply Json objects.
@@ -77,8 +79,8 @@ class WorkflowInstance(object):
             Internal state of workflow execution
         mongo_collection : pymongo.Collection
             MongoDB collection containing workflow state data
-        backend_id : string
-            Name of the Yadage backend
+        backend : packtivity.PythonCallableAsyncBackend
+            Default Yadage backend
         """
         self.identifier = str(metadata['_id'])
         self.name = metadata['name']
@@ -86,27 +88,33 @@ class WorkflowInstance(object):
         self.wflowid = ObjectId(metadata['workflow'])
         self.deserializer = functools.partial(
             load_state_custom_deserializer,
-            backendstring=backend_id
+            backend=backend
         )
-        self.controller = PersistentController(self)
-        self.controller.backend = clihelpers.setupbackend_fromstring(backend_id)
-        # Get the list of identifier for rules that are applicable.
-        self.applicable_rules = self.controller.applicable_rules()
-        # Get list of identifier for submittable nodes
-        self.submittable_nodes = self.controller.submittable_nodes()
-        # Set the workflow status
-        if self.controller.validate():
-            if self.controller.finished():
-                if self.controller.successful():
-                    self.status = WORKFLOW_SUCCESS
+        try:
+            self.controller = PersistentController(self)
+            self.controller.backend = backend
+            # Get the list of identifier for rules that are applicable.
+            self.applicable_rules = self.controller.applicable_rules()
+            # Get list of identifier for submittable nodes
+            self.submittable_nodes = self.controller.submittable_nodes()
+            # Set the workflow status
+            if self.controller.validate():
+                if self.controller.finished():
+                    if self.controller.successful():
+                        self.status = WORKFLOW_SUCCESS
+                    else:
+                        self.status = WORKFLOW_ERROR
                 else:
-                    self.status = WORKFLOW_ERROR
+                    if len(self.applicable_rules) > 0 or len(self.submittable_nodes) > 0:
+                        self.status = WORKFLOW_IDLE
+                    else:
+                        self.status = WORKFLOW_RUNNING
             else:
-                if len(self.applicable_rules) > 0 or len(self.submittable_nodes) > 0:
-                    self.status = WORKFLOW_IDLE
-                else:
-                    self.status = WORKFLOW_RUNNING
-        else:
+                self.status = WORKFLOW_ERROR
+        except AttributeError as ex:
+            # Set status to error if the workflow cannot be initialized
+            self.applicable_rules = []
+            self.submittable_nodes = []
             self.status = WORKFLOW_ERROR
 
     def apply_rules(self, rule_instances):
@@ -205,6 +213,8 @@ class WorkflowRepository(object):
         self.store = MongoDBConnector(config)
         # Directory for workflow files
         self.workflow_dir = os.path.abspath(config['db.workdir'])
+        # Set the default Yadage backend. This implementation uses Celery
+        self.backend = pb.PacktivityBackend(packtivity_backend=CeleryBackend())
 
     def create_workflow(self, workflow_template, name, init_data):
         """Create a new workflow instance in the repository. Assigns the given
@@ -252,7 +262,7 @@ class WorkflowRepository(object):
             )
         }
         db.metadata.insert_one(metadata)
-        return WorkflowInstance(metadata, db.workflows)
+        return WorkflowInstance(metadata, db.workflows, self.backend)
 
     def delete_workflow(self, workflow_id):
         """Delete workflow instance with the given identifier. The result
@@ -299,7 +309,7 @@ class WorkflowRepository(object):
         cursor = db.metadata.find({'_id': workflow_id})
         if cursor.count() > 0:
             obj = cursor.next()
-            return WorkflowInstance(obj, db.workflows)
+            return WorkflowInstance(obj, db.workflows, self.backend)
         else:
             return None
 
@@ -323,7 +333,7 @@ class WorkflowRepository(object):
         db = self.store.get_database()
         cursor = db.metadata.find()
         for document in cursor:
-            wf = WorkflowInstance(document, db.workflows)
+            wf = WorkflowInstance(document, db.workflows, self.backend)
             if not status is None:
                 if status != wf.status:
                     continue
@@ -368,3 +378,15 @@ class MongoDBConnector(object):
             return MongoClient(self.db_uri)[self.db_name]
         else:
             return MongoClient()[self.db_name]
+
+
+# ------------------------------------------------------------------------------
+# Helper Methods
+# ------------------------------------------------------------------------------
+
+def load_state_custom_deserializer(jsondata, backend=None):
+    return YadageWorkflow.fromJSON(
+        jsondata,
+        VariableProxy,
+        backend
+    )

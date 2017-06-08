@@ -40,12 +40,12 @@ WEB_CONFIG_FILE_URI = 'https://raw.githubusercontent.com/heikomuller/yadage-engi
 # variable is not set a file 'config.yaml' in the current working directory
 # will be used. The default configuration is read first from the GitHub
 # repository. Default values are overwritten by local configurations (if any).
-#def_conf = yaml.load(urllib2.urlopen(WEB_CONFIG_FILE_URI).read())['properties']
-#config = {kvp['key'] : kvp['value'] for kvp in def_conf}
+def_conf = yaml.load(urllib2.urlopen(WEB_CONFIG_FILE_URI).read())['properties']
+config = {kvp['key'] : kvp['value'] for kvp in def_conf}
 config = {}
 LOCAL_CONFIG_FILE = os.getenv(ENV_CONFIG)
 obj = None
-if os.path.isfile(LOCAL_CONFIG_FILE):
+if not LOCAL_CONFIG_FILE is None and os.path.isfile(LOCAL_CONFIG_FILE):
     with open(LOCAL_CONFIG_FILE, 'r') as f:
         obj = yaml.load(f.read())
 elif os.path.isfile('./config.yaml'):
@@ -239,14 +239,14 @@ def apply_rules(workflow_id):
 
 
 @app.route('/workflows/<string:workflow_id>/files')
-def get_workflow_files(workflow_id):
+def list_workflow_files(workflow_id):
     """GET - Workflow directory listing
 
     Recursive listing of all files in the workflow working directory.
     """
     # Get a list of workflow files. The result is None if the workflow does
     # not exists.
-    files = api.get_workflow_files(workflow_id)
+    files = api.list_workflow_files(workflow_id)
     if files is None:
         abort(404)
     return jsonify(files)

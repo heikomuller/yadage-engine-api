@@ -2,6 +2,8 @@
 *.rdb
 yadageengine/config.yaml
 yadageengine/venv/
+data/
+log/
 tests/data/
 yadageengine.egg-info/
 build/

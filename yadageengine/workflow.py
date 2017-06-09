@@ -10,6 +10,7 @@ The workflow repository manages and persists information about running and
 completed workflow instances. The default repository implementation uses
 MongoDB as the storage backend.
 """
+import datetime
 import functools
 import os
 import uuid
@@ -21,7 +22,7 @@ from packtivity.asyncbackends import CeleryBackend
 import packtivity.statecontexts.posixfs_context as statecontext
 import yadage.backends.packtivitybackend as pb
 import yadage.clihelpers as clihelpers
-from yadage.controllers import PersistentController, VariableProxy
+from yadage.controllers import PersistentController, VariableProxy, setup_controller_fromstring
 from yadage.yadagemodels import YadageWorkflow
 
 # ------------------------------------------------------------------------------
@@ -40,6 +41,7 @@ WORKFLOW_IDLE ='IDLE'
 WORKFLOW_ERROR  = 'ERROR'
 WORKFLOW_SUCCESS = 'SUCCESS'
 
+WORKFLOW_STATES = [WORKFLOW_RUNNING, WORKFLOW_IDLE, WORKFLOW_ERROR, WORKFLOW_SUCCESS]
 
 # ------------------------------------------------------------------------------
 #
@@ -84,38 +86,40 @@ class WorkflowInstance(object):
         """
         self.identifier = str(metadata['_id'])
         self.name = metadata['name']
+        self.createdAt = datetime.datetime.strptime(metadata['createdAt'], '%Y-%m-%dT%H:%M:%S.%f')
         self.collection = mongo_collection
         self.wflowid = ObjectId(metadata['workflow'])
         self.deserializer = functools.partial(
             load_state_custom_deserializer,
             backend=backend
         )
-        try:
-            self.controller = PersistentController(self)
-            self.controller.backend = backend
-            # Get the list of identifier for rules that are applicable.
-            self.applicable_rules = self.controller.applicable_rules()
-            # Get list of identifier for submittable nodes
-            self.submittable_nodes = self.controller.submittable_nodes()
-            # Set the workflow status
-            if self.controller.validate():
-                if self.controller.finished():
-                    if self.controller.successful():
-                        self.status = WORKFLOW_SUCCESS
-                    else:
-                        self.status = WORKFLOW_ERROR
+        #try:
+        self.controller = PersistentController(self)
+        self.controller.backend = backend
+        #    pass
+        # Get the list of identifier for rules that are applicable.
+        self.applicable_rules = self.controller.applicable_rules()
+        # Get list of identifier for submittable nodes
+        self.submittable_nodes = self.controller.submittable_nodes()
+        # Set the workflow status
+        if self.controller.validate():
+            if self.controller.finished():
+                if self.controller.successful():
+                    self.status = WORKFLOW_SUCCESS
                 else:
-                    if len(self.applicable_rules) > 0 or len(self.submittable_nodes) > 0:
-                        self.status = WORKFLOW_IDLE
-                    else:
-                        self.status = WORKFLOW_RUNNING
+                    self.status = WORKFLOW_ERROR
             else:
-                self.status = WORKFLOW_ERROR
-        except AttributeError as ex:
-            # Set status to error if the workflow cannot be initialized
-            self.applicable_rules = []
-            self.submittable_nodes = []
+                if len(self.applicable_rules) > 0 or len(self.submittable_nodes) > 0:
+                    self.status = WORKFLOW_IDLE
+                else:
+                    self.status = WORKFLOW_RUNNING
+        else:
             self.status = WORKFLOW_ERROR
+        #except AttributeError as ex:
+        #    # Set status to error if the workflow cannot be initialized
+        ##    self.applicable_rules = []
+        #    self.submittable_nodes = []
+        #    self.status = WORKFLOW_ERROR
 
     def apply_rules(self, rule_instances):
         """Apply a given set of rule instances.
@@ -257,6 +261,8 @@ class WorkflowRepository(object):
         metadata = {
             '_id' : identifier,
             'name' : name,
+            'status' : WORKFLOW_IDLE,
+            'createdAt' : str(datetime.datetime.utcnow().isoformat()),
             'workflow' : str(
                 db.workflows.insert_one(workflowobj.json()).inserted_id
             )

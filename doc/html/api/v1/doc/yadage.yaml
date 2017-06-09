@@ -11,7 +11,7 @@ info:
 
 schemes:
   - http
-host: cds-swg1.cims.nyu.edu
+host: localhost:25011
 basePath: /yadage-engine/api/v1
 
 paths:
@@ -66,6 +66,12 @@ paths:
             operationId: listWorkflows
             tags:
                 - workflow
+            parameters:
+                - name: status
+                  in: query
+                  required: false
+                  description: Name of workflow status to filter on
+                  type: string
             produces:
                 - application/json
             responses:
@@ -125,6 +131,34 @@ paths:
                     schema:
                         type: object
                         $ref: "#/definitions/WorkflowDescriptor"
+    /workflow-stats:
+        get:
+            summary: List workflow statistics
+            description: Returns a count of workflows by status
+            operationId: getWorkflowStats
+            tags:
+                - workflow
+            produces:
+                - application/json
+            responses:
+                200:
+                    description: Workflow statistics
+                    schema:
+                        type: object
+                        required:
+                            - statistics
+                        properties:
+                            statistics:
+                                type: object
+                                properties:
+                                    ERROR:
+                                        type: integer
+                                    IDLE:
+                                        type: integer
+                                    RUNNING:
+                                        type: integer
+                                    SUCCESS:
+                                        type: integer
     /workflows/{workflowIdentifier}:
         get:
             summary: Get current workflow state

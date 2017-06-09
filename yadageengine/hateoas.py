@@ -14,6 +14,9 @@ module contains all methods to generate HATEOAS references for API resources.
 # Json element name for HATEOAS reference lists
 HATEOAS_LINKS = 'links'
 
+# Url query parameter for workflow statuses
+PARA_STATUS = 'status'
+
 
 # ------------------------------------------------------------------------------
 # Url factory
@@ -105,6 +108,27 @@ class UrlFactory:
             Url for workflow resources listing.
         """
         return self.base_url + '/workflows'
+
+    def workflow_stats_url(self):
+        """Url to retrieve a summary of workflows by state.
+
+        Returns
+        -------
+        string
+            Url to retrieve workflows statistics object
+        """
+        return self.base_url + '/workflow-stats'
+
+    def workflow_status_url(self, status):
+        """Url to retrieve workflow resources listing containing only those
+        workflows of a given status.
+
+        Returns
+        -------
+        string
+            Url for workflow resources listing.
+        """
+        return self.workflow_list_url() + '?' + PARA_STATUS + '=' + status
 
     def workflow_submit_nodes_url(self, workflow_id):
         """Url for an submit nodes request for a given workflow.

@@ -6,7 +6,7 @@ properties:
     - key: 'server.port'
       value: 25011
     - key: 'app.name'
-      value: 'Yadage Workflow Engine API'
+      value: 'Yadage Workflow Engine @ CDS.NYU'
     - key: 'app.doc'
       value: 'http://localhost/yadage-doc/engine/api/v1/doc/index.html'
     - key: 'app.debug'

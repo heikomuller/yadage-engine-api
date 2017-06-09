@@ -14,6 +14,7 @@ from pymongo import MongoClient
 import urllib2
 import yaml
 
+from hateoas import PARA_STATUS
 from engine import YADAGEEngine
 
 
@@ -68,6 +69,9 @@ if not obj is None:
 # mongo.uri (optional): Uri containing MongoDB host and port (e.g.,
 #             'mongodb://user:pwd@example.com?authMechanism=SCRAM-SHA-1')
 
+# Get the server port
+SERVER_PORT = config['server.port']
+
 # Switch debugging ON/OFF
 DEBUG = config['app.debug']
 
@@ -99,13 +103,12 @@ api = YADAGEEngine(config)
 # ------------------------------------------------------------------------------
 
 # Create the app and enable cross-origin resource sharing
-app = Flask(__name__, static_url_path=WORK_BASE)
-app.config['APPLICATION_ROOT'] = config['server.apppath']
-app.config['PORT'] = config['server.port']
-app.config['DEBUG'] = DEBUG
-if not LOG_DIR is None:
-    app.config['LOG_DIR'] = LOG_DIR
-CORS(app)
+engine_app = Flask(__name__, static_url_path=WORK_BASE)
+engine_app.config['APPLICATION_ROOT'] = config['server.apppath']
+engine_app.config['DEBUG'] = DEBUG
+#if not LOG_DIR is None:
+#    engine_app.config['LOG_DIR'] = LOG_DIR
+CORS(engine_app)
 
 
 # ------------------------------------------------------------------------------
@@ -114,7 +117,7 @@ CORS(app)
 #
 # ------------------------------------------------------------------------------
 
-@app.route('/')
+@engine_app.route('/')
 def get_welcome():
     """GET - Welcome Message
 
@@ -124,7 +127,7 @@ def get_welcome():
     return jsonify(api.get_description())
 
 
-@app.route('/files/<path:path>')
+@engine_app.route('/files/<path:path>')
 def send_file(path):
     """GET - Workflow output file
 
@@ -134,17 +137,19 @@ def send_file(path):
     return send_from_directory(WORK_BASE, path)
 
 
-@app.route('/workflows')
+@engine_app.route('/workflows')
 def list_workflows():
     """GET - Workflow Listing
 
     Returns a list of workflows currently managed by the workflow engine.
     """
+    # Check if a filter query argument was given in the request
+    query = request.args[PARA_STATUS] if PARA_STATUS in request.args else None
     # Get list of worklows and return a list of workflow descriptors
-    return jsonify(api.list_workflows())
+    return jsonify(api.list_workflows(query=query))
 
 
-@app.route('/workflows', methods=['POST'])
+@engine_app.route('/workflows', methods=['POST'])
 def create_workflow():
     """POST - Submit RECAST request
 
@@ -181,7 +186,18 @@ def create_workflow():
     except ValueError as ex:
         abort(400)
 
-@app.route('/workflows/<string:workflow_id>')
+
+@engine_app.route('/workflow-stats')
+def get_workflow_stats():
+    """GET - Workflow Statistics
+
+    Returns a summary of workflow statuses for workflows currently managed by
+    the workflow engine.
+    """
+    return jsonify(api.get_workflow_stats())
+
+
+@engine_app.route('/workflows/<string:workflow_id>')
 def get_workflow(workflow_id):
     """GET - Workflow
 
@@ -194,7 +210,7 @@ def get_workflow(workflow_id):
     return jsonify(workflow)
 
 
-@app.route('/workflows/<string:workflow_id>', methods=['DELETE'])
+@engine_app.route('/workflows/<string:workflow_id>', methods=['DELETE'])
 def delete_workflow(workflow_id):
     """DELETE - Workflow
 
@@ -210,7 +226,7 @@ def delete_workflow(workflow_id):
         abort(404)
 
 
-@app.route('/workflows/<string:workflow_id>/apply', methods=['POST'])
+@engine_app.route('/workflows/<string:workflow_id>/apply', methods=['POST'])
 def apply_rules(workflow_id):
     """POST - Workflow extension
 
@@ -238,7 +254,7 @@ def apply_rules(workflow_id):
         abort(400)
 
 
-@app.route('/workflows/<string:workflow_id>/files')
+@engine_app.route('/workflows/<string:workflow_id>/files')
 def list_workflow_files(workflow_id):
     """GET - Workflow directory listing
 
@@ -252,7 +268,7 @@ def list_workflow_files(workflow_id):
     return jsonify(files)
 
 
-@app.route('/workflows/<string:workflow_id>/submit', methods=['POST'])
+@engine_app.route('/workflows/<string:workflow_id>/submit', methods=['POST'])
 def submit_tasks(workflow_id):
     """POST - Submit task
 
@@ -283,13 +299,13 @@ def submit_tasks(workflow_id):
 #
 # ------------------------------------------------------------------------------
 
-@app.errorhandler(404)
+@engine_app.errorhandler(404)
 def not_found(error):
     """404 JSON response generator."""
     return make_response(jsonify({'error': 'Not found'}), 404)
 
 
-@app.errorhandler(500)
+@engine_app.errorhandler(500)
 def internal_error(exception):
     """Exception handler that logs exceptions."""
     app.logger.error(exception)
@@ -307,7 +323,7 @@ if __name__ == '__main__':
     from werkzeug.serving import run_simple
     from werkzeug.wsgi import DispatcherMiddleware
     # Switch logging on if not in debug mode
-    if app.debug is not True:
+    if engine_app.debug is not True:
         import logging
         from logging.handlers import RotatingFileHandler
         file_handler = RotatingFileHandler(
@@ -320,10 +336,10 @@ if __name__ == '__main__':
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
         file_handler.setFormatter(formatter)
-        app.logger.addHandler(file_handler)
+        engine_app.logger.addHandler(file_handler)
     # Load a dummy app at the root URL to give 404 errors.
     # Serve app at APPLICATION_ROOT for localhost development.
     application = DispatcherMiddleware(Flask('dummy_app'), {
-        app.config['APPLICATION_ROOT']: app,
+        engine_app.config['APPLICATION_ROOT']: engine_app,
     })
-    run_simple('0.0.0.0', app.config['PORT'], application, use_reloader=app.config['DEBUG'])
+    run_simple('0.0.0.0', SERVER_PORT, application, use_reloader=engine_app.config['DEBUG'])

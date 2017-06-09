@@ -16,7 +16,7 @@ import shutil
 import urllib
 
 from hateoas import UrlFactory, self_reference, hateoas_reference, HATEOAS_LINKS
-from workflow import WorkflowRepository
+from workflow import WorkflowRepository, WORKFLOW_STATES
 
 
 # ------------------------------------------------------------------------------
@@ -75,14 +75,23 @@ class YADAGEEngine(object):
         # The workflows listing Url is also used as Url for submitting workflow
         # run requests
         action_url =  self.urls.workflow_list_url()
+        links = [
+            self_reference(self.urls.base_url),
+            hateoas_reference('doc', config['app.doc']),
+            hateoas_reference('workflows.list', action_url),
+            hateoas_reference('workflows.submit', action_url),
+            hateoas_reference('workflows.stats', self.urls.workflow_stats_url())
+        ]
+        for status in WORKFLOW_STATES:
+            links.append(
+                hateoas_reference(
+                    'workflows.list.' + status,
+                    self.urls.workflow_status_url(status)
+                )
+            )
         self.description = {
             'name': config['app.name'],
-            HATEOAS_LINKS : [
-                self_reference(self.urls.base_url),
-                hateoas_reference('doc', config['app.doc']),
-                hateoas_reference('workflows.list', action_url),
-                hateoas_reference('workflows.submit', action_url)
-            ]
+            HATEOAS_LINKS : links
         }
 
     def apply_rules(self, workflow_id, rule_instances):
@@ -236,7 +245,20 @@ class YADAGEEngine(object):
         """
         return serialize_workflow(self.db.get_workflow(workflow_id), self.urls)
 
-    def list_workflows(self):
+    def get_workflow_stats(self):
+        """Get a count of workflows in the database by workflow status.
+
+        Returns
+        -------
+        dict
+            Object containing dictionary of workflow status counts
+        """
+        stats = {status : 0 for status in WORKFLOW_STATES}
+        for workflow in self.db.list_workflows():
+            stats[workflow.status] += 1
+        return {'statistics' : stats}
+
+    def list_workflows(self, query=None):
         """Get a list of all workflows currently managed by the engine.
 
         Returns
@@ -247,7 +269,7 @@ class YADAGEEngine(object):
         return {
             'workflows': [
                 serialize_workflow_descriptor(wf, self.urls)
-                    for wf in self.db.list_workflows()
+                    for wf in self.db.list_workflows(status=query)
             ],
             HATEOAS_LINKS: [
                 self_reference(self.urls.workflow_list_url())

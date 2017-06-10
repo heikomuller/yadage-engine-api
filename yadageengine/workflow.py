@@ -61,6 +61,8 @@ class WorkflowInstance(object):
         User-defined workflow name
     status : string
         Workflow state object
+    createdAt : string
+        Timestamp of creation (UTC)
     json : Json object
         Json serialization of workflow state object
     applicable_rules : list(adage.Rule)
@@ -68,7 +70,7 @@ class WorkflowInstance(object):
     submittable_nodes : list(adage.AdageNode)
         List of submittable nodes
     """
-    def __init__(self, metadata, mongo_collection, backend):
+    def __init__(self, metadata, db, backend):
         """Initialize the identfifier, name, state, dag, rules, applied rules
         and applicable rule identifier. At this stage all ADAGE objects are
         simply Json objects.
@@ -79,16 +81,16 @@ class WorkflowInstance(object):
             Metadata information including workflow id and name
         program_state : YadageWorkflow
             Internal state of workflow execution
-        mongo_collection : pymongo.Collection
-            MongoDB collection containing workflow state data
+        db : WorkflowRepository
+            Workflow repository to get and update workflow state
         backend : packtivity.PythonCallableAsyncBackend
             Default Yadage backend
         """
         self.identifier = str(metadata['_id'])
         self.name = metadata['name']
-        self.createdAt = datetime.datetime.strptime(metadata['createdAt'], '%Y-%m-%dT%H:%M:%S.%f')
-        self.collection = mongo_collection
-        self.wflowid = ObjectId(metadata['workflow'])
+        self.createdAt = metadata['createdAt']
+        self.db = db
+        self.wflowid = metadata['workflow']
         self.deserializer = functools.partial(
             load_state_custom_deserializer,
             backend=backend
@@ -152,13 +154,13 @@ class WorkflowInstance(object):
         data : yadage.YadageWorkflow
             Yadage workflow object
         """
-        self.collection.replace_one({'_id' : self.wflowid}, data.json())
+        self.db.update_Workflow(self.wflowid, data.json())
 
     def json(self):
         """Retrieve workflow state. Implements method from
         yadage.controllers.MongoBackedModel.
         """
-        return self.collection.find_one({'_id' : self.wflowid})
+        return self.db.get_workflow_state(self.wflowid)
 
     def load(self):
         """Retrieve workflow state. Implements method from
@@ -219,6 +221,8 @@ class WorkflowRepository(object):
         self.workflow_dir = os.path.abspath(config['db.workdir'])
         # Set the default Yadage backend. This implementation uses Celery
         self.backend = pb.PacktivityBackend(packtivity_backend=CeleryBackend())
+        # Set stats initialliy to none to enforce update
+        self.stats = None
 
     def create_workflow(self, workflow_template, name, init_data):
         """Create a new workflow instance in the repository. Assigns the given
@@ -255,6 +259,8 @@ class WorkflowRepository(object):
             rootcontext
         )
         workflowobj.view().init(init_data)
+        # Timestamp of object creation
+        timestamp = datetime.datetime.utcnow().isoformat()
         # Connect to MongoDB. Insert workflow state inti collection workflows
         # and metadata inti collection metadata
         db = self.store.get_database()
@@ -262,13 +268,14 @@ class WorkflowRepository(object):
             '_id' : identifier,
             'name' : name,
             'status' : WORKFLOW_IDLE,
-            'createdAt' : str(datetime.datetime.utcnow().isoformat()),
+            'createdAt' : timestamp,
             'workflow' : str(
                 db.workflows.insert_one(workflowobj.json()).inserted_id
             )
         }
         db.metadata.insert_one(metadata)
-        return WorkflowInstance(metadata, db.workflows, self.backend)
+        self.stats = None
+        return WorkflowInstance(metadata, self, self.backend)
 
     def delete_workflow(self, workflow_id):
         """Delete workflow instance with the given identifier. The result
@@ -296,6 +303,7 @@ class WorkflowRepository(object):
         # Delete workflow and metadata
         db.workflows.delete_one({'_id': md['workflow']})
         db.metadata.delete_one({'_id': workflow_id})
+        self.stats = None
         return True
 
     def get_workflow(self, workflow_id):
@@ -315,9 +323,44 @@ class WorkflowRepository(object):
         cursor = db.metadata.find({'_id': workflow_id})
         if cursor.count() > 0:
             obj = cursor.next()
-            return WorkflowInstance(obj, db.workflows, self.backend)
+            return WorkflowInstance(obj, self, self.backend)
         else:
             return None
+
+    def get_workflow_state(self, workflow_id):
+        """Get the state for the workflow with given identifier.
+
+        Parameters
+        ----------
+        workflow_id : string
+            Unique workflow state identifier.  Note, this is not the workflow
+            identifier that is visible to the user but the identifier of the
+            MongoDB document instead.
+
+        Returns
+        -------
+        Json document
+        """
+        # Connect to database
+        db = self.store.get_database()
+        return db.workflows.find_one({'_id' : ObjectId(workflow_id)})
+
+    def get_workflow_stats(self):
+        """Get a count of workflows in the database by workflow status.
+
+        Returns
+        -------
+        dict
+            Dictionary containing dictionary of workflow status counts
+        """
+        # Refresh list if it has been invalidated
+        if self.stats is None:
+            statistics = {status : 0 for status in WORKFLOW_STATES}
+            for workflow in self.list_workflows():
+                statistics[workflow.status] += 1
+                self.stats = statistics
+                return statistics
+        return self.stats
 
     def list_workflows(self, status=None):
         """List all workflow instances in the repository. Allows to filter the
@@ -339,12 +382,36 @@ class WorkflowRepository(object):
         db = self.store.get_database()
         cursor = db.metadata.find()
         for document in cursor:
-            wf = WorkflowInstance(document, db.workflows, self.backend)
+            wf = WorkflowInstance(document, self, self.backend)
             if not status is None:
                 if status != wf.status:
                     continue
             result.append(wf)
         return result
+
+    def update_Workflow(self, workflow_id, data):
+        """Update the state of the workflow with the given identifier.
+
+        Parameters
+        ----------
+        workflow_id : Unique workflow state identifier. Note, this is not the
+            identifier of the workflow object that is visible to the user but
+            the MongoDB object id
+        data : JSON
+            JSON representation of the workflow state
+        """
+        # Connect to database
+        db = self.store.get_database()
+        # Update workflow state in workflow collection
+        db.workflows.replace_one({'_id' : ObjectId(workflow_id)}, data)
+        # Invalidate stats
+        self.stats = None
+        # Update the last modified date in the metadata
+        #timestamp = datetime.datetime.utcnow().isoformat()
+        #db.metadata.update_one(
+        #    { 'workflow' : workflow_id },
+        #    {'$set': { 'lastModifiedAt' : timestamp }}
+        #)
 
 
 # ------------------------------------------------------------------------------

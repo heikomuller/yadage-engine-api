@@ -253,10 +253,7 @@ class YADAGEEngine(object):
         dict
             Object containing dictionary of workflow status counts
         """
-        stats = {status : 0 for status in WORKFLOW_STATES}
-        for workflow in self.db.list_workflows():
-            stats[workflow.status] += 1
-        return {'statistics' : stats}
+        return {'statistics' : self.db.get_workflow_stats()}
 
     def list_workflows(self, query=None):
         """Get a list of all workflows currently managed by the engine.
@@ -416,6 +413,7 @@ def serialize_workflow(workflow, urls):
         'id' : workflow.identifier,
         'name' : workflow.name,
         'status' : workflow.status,
+        'createdAt' : workflow.createdAt,
         'applicableRules' : workflow.applicable_rules,
         'submittableNodes' : workflow.submittable_nodes,
         'dag' : workflow.json()['dag'],
@@ -429,11 +427,12 @@ def serialize_workflow(workflow, urls):
                 urls.workflow_list_files_url(workflow.identifier)
             ),
             hateoas_reference(
-                'apply',
+                'applyRules',
                 urls.workflow_apply_rules_url(workflow.identifier)
             ),
+            hateoas_reference('delete', workflow_url),
             hateoas_reference(
-                'submit',
+                'submitNodes',
                 urls.workflow_submit_nodes_url(workflow.identifier)
             ),
             hateoas_reference('list', urls.workflow_list_url()),
@@ -467,6 +466,7 @@ def serialize_workflow_descriptor(workflow, urls):
         'id' : workflow.identifier,
         'name' : workflow.name,
         'status' : workflow.status,
+        'createdAt' : workflow.createdAt,
         HATEOAS_LINKS : [
             self_reference(urls.workflow_url(workflow.identifier))
         ]

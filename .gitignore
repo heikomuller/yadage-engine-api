@@ -1,5 +1,6 @@
 *.pyc
 *.rdb
+config.yaml
 yadageengine/config.yaml
 yadageengine/venv/
 data/

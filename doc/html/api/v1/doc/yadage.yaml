@@ -458,6 +458,7 @@ definitions:
             - id
             - name
             - state
+            - createdAt
             - links
         properties:
             id:
@@ -465,6 +466,8 @@ definitions:
             name:
                 type: string
             state:
+                type: string
+            createdAt:
                 type: string
             links:
                 type: array
@@ -475,6 +478,7 @@ definitions:
             - id
             - name
             - state
+            - createdAt
             - dag
             - rules
             - applied
@@ -486,6 +490,8 @@ definitions:
             name:
                 type: string
             state:
+                type: string
+            createdAt:
                 type: string
             dag:
                 type: object

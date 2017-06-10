@@ -2,11 +2,11 @@ properties:
     - key: 'server.apppath'
       value : '/yadage-engine/api/v1'
     - key: 'server.url'
-      value : 'http://localhost'
+      value : 'http://cds-swg1.cims.nyu.edu'
     - key: 'server.port'
       value: 25011
     - key: 'app.name'
-      value: 'Yadage Workflow Engine API'
+      value: 'Yadage Workflow Engine @ CDS.NYU'
     - key: 'app.doc'
       value: 'http://localhost/yadage-doc/engine/api/v1/doc/index.html'
     - key: 'app.debug'

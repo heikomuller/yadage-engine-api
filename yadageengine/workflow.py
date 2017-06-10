@@ -95,33 +95,33 @@ class WorkflowInstance(object):
             load_state_custom_deserializer,
             backend=backend
         )
-        #try:
-        self.controller = PersistentController(self)
-        self.controller.backend = backend
-        #    pass
-        # Get the list of identifier for rules that are applicable.
-        self.applicable_rules = self.controller.applicable_rules()
-        # Get list of identifier for submittable nodes
-        self.submittable_nodes = self.controller.submittable_nodes()
-        # Set the workflow status
-        if self.controller.validate():
-            if self.controller.finished():
-                if self.controller.successful():
-                    self.status = WORKFLOW_SUCCESS
+        try:
+            self.controller = PersistentController(self)
+            self.controller.backend = backend
+            #    pass
+            # Get the list of identifier for rules that are applicable.
+            self.applicable_rules = self.controller.applicable_rules()
+            # Get list of identifier for submittable nodes
+            self.submittable_nodes = self.controller.submittable_nodes()
+            # Set the workflow status
+            if self.controller.validate():
+                if self.controller.finished():
+                    if self.controller.successful():
+                        self.status = WORKFLOW_SUCCESS
+                    else:
+                        self.status = WORKFLOW_ERROR
                 else:
-                    self.status = WORKFLOW_ERROR
+                    if len(self.applicable_rules) > 0 or len(self.submittable_nodes) > 0:
+                        self.status = WORKFLOW_IDLE
+                    else:
+                        self.status = WORKFLOW_RUNNING
             else:
-                if len(self.applicable_rules) > 0 or len(self.submittable_nodes) > 0:
-                    self.status = WORKFLOW_IDLE
-                else:
-                    self.status = WORKFLOW_RUNNING
-        else:
+                self.status = WORKFLOW_ERROR
+        except AttributeError as ex:
+            # Set status to error if the workflow cannot be initialized
+            self.applicable_rules = []
+            self.submittable_nodes = []
             self.status = WORKFLOW_ERROR
-        #except AttributeError as ex:
-        #    # Set status to error if the workflow cannot be initialized
-        ##    self.applicable_rules = []
-        #    self.submittable_nodes = []
-        #    self.status = WORKFLOW_ERROR
 
     def apply_rules(self, rule_instances):
         """Apply a given set of rule instances.
@@ -221,8 +221,6 @@ class WorkflowRepository(object):
         self.workflow_dir = os.path.abspath(config['db.workdir'])
         # Set the default Yadage backend. This implementation uses Celery
         self.backend = pb.PacktivityBackend(packtivity_backend=CeleryBackend())
-        # Set stats initialliy to none to enforce update
-        self.stats = None
 
     def create_workflow(self, workflow_template, name, init_data):
         """Create a new workflow instance in the repository. Assigns the given
@@ -274,7 +272,6 @@ class WorkflowRepository(object):
             )
         }
         db.metadata.insert_one(metadata)
-        self.stats = None
         return WorkflowInstance(metadata, self, self.backend)
 
     def delete_workflow(self, workflow_id):
@@ -303,7 +300,6 @@ class WorkflowRepository(object):
         # Delete workflow and metadata
         db.workflows.delete_one({'_id': md['workflow']})
         db.metadata.delete_one({'_id': workflow_id})
-        self.stats = None
         return True
 
     def get_workflow(self, workflow_id):
@@ -353,14 +349,11 @@ class WorkflowRepository(object):
         dict
             Dictionary containing dictionary of workflow status counts
         """
-        # Refresh list if it has been invalidated
-        if self.stats is None:
-            statistics = {status : 0 for status in WORKFLOW_STATES}
-            for workflow in self.list_workflows():
-                statistics[workflow.status] += 1
-                self.stats = statistics
-                return statistics
-        return self.stats
+        statistics = {status : 0 for status in WORKFLOW_STATES}
+        for workflow in self.list_workflows():
+            statistics[workflow.status] += 1
+            self.stats = statistics
+        return statistics
 
     def list_workflows(self, status=None):
         """List all workflow instances in the repository. Allows to filter the
@@ -404,8 +397,6 @@ class WorkflowRepository(object):
         db = self.store.get_database()
         # Update workflow state in workflow collection
         db.workflows.replace_one({'_id' : ObjectId(workflow_id)}, data)
-        # Invalidate stats
-        self.stats = None
         # Update the last modified date in the metadata
         #timestamp = datetime.datetime.utcnow().isoformat()
         #db.metadata.update_one(

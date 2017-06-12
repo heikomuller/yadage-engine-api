@@ -1,0 +1,19 @@
+web:
+    build: .
+    command: /app/engine.sh
+    ports:
+        - "25011:25011"
+    volumes:
+        - ./config:/config
+    environment:
+        - YADAGE_ENGINE_CONFIG=/config/docker-config.yaml
+        - C_FORCE_ROOT=true
+    links:
+        - db:database
+        - redis:localhost
+db:
+    image: mongo:3.0.2
+redis:
+   image: redis:latest
+   ports:
+     - "6379:6379"

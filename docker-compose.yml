@@ -1,19 +1,31 @@
-web:
-    build: .
-    command: /app/engine.sh
-    ports:
-        - "25011:25011"
-    volumes:
-        - ./config:/config
-    environment:
-        - YADAGE_ENGINE_CONFIG=/config/docker-config.yaml
-        - C_FORCE_ROOT=true
-    links:
-        - db:database
-        - redis:localhost
-db:
-    image: mongo:3.0.2
-redis:
-   image: redis:latest
-   ports:
-     - "6379:6379"
+version: "2"
+services:
+    web:
+        build: .
+        command: python yadageengine
+        ports:
+            - "25011:25011"
+        volumes:
+            - ./config:/config
+        environment:
+            - YADAGE_ENGINE_CONFIG=/config/docker-config.yaml
+            - PACKTIVITY_CELERY_REDIS_BROKER=redis://redis
+        links:
+            - redis
+            - db:database
+    db:
+        image: mongo:3.0.2
+    redis:
+        image: redis:latest
+        ports:
+            - "6379:6379"
+    celery:
+        build:
+            context: .
+            dockerfile: Celery.Dockerfile
+        environment:
+            - PACKTIVITY_CELERY_REDIS_BROKER=redis://redis
+            - C_FORCE_ROOT=true
+        command: "/app/run_celery.sh"
+        links:
+            - redis

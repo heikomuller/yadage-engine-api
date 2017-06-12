@@ -6,9 +6,9 @@ properties:
     - key: 'server.port'
       value: 25011
     - key: 'app.name'
-      value: 'Yadage Workflow Engine Docker Container'
+      value: 'Yadage Workflow Engine - Docker Container'
     - key: 'app.doc'
-      value: 'http://localhost/yadage-doc/engine/api/v1/doc/index.html'
+      value: 'http://localhost:8088/doc/engine/api/v1/doc/index.html'
     - key: 'app.debug'
       value: true
     - key: 'app.logdir'

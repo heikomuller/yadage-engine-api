@@ -378,6 +378,7 @@ def list_directory(directory_name, relative_path, urls):
                 'href': urls.file_url(relative_path + '/' + filename)
             }
         files.append(descriptor)
+    files.sort(key=lambda descriptor: descriptor['name'])
     return files
 
 

@@ -308,7 +308,7 @@ def not_found(error):
 @engine_app.errorhandler(500)
 def internal_error(exception):
     """Exception handler that logs exceptions."""
-    app.logger.error(exception)
+    engine_app.logger.error(exception)
     return make_response(jsonify({'error': str(exception)}), 500)
 
 

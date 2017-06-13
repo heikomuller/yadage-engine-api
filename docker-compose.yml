@@ -13,6 +13,7 @@ services:
         links:
             - redis
             - db:database
+        image: heikomueller/yadage-engine-api
     db:
         image: mongo:3.0.2
     redis:
@@ -27,5 +28,8 @@ services:
             - PACKTIVITY_CELERY_REDIS_BROKER=redis://redis
             - C_FORCE_ROOT=true
         command: "/app/run_celery.sh"
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
         links:
             - redis
+        image: heikomueller/yadage-engine-celery

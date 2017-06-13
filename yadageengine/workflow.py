@@ -18,12 +18,14 @@ import uuid
 from bson.objectid import ObjectId
 from pymongo import MongoClient
 
+from adage.nodestate import DEFINED, RUNNING, FAILED, SUCCESS
 from packtivity.asyncbackends import CeleryBackend
 import packtivity.statecontexts.posixfs_context as statecontext
 import yadage.backends.packtivitybackend as pb
 import yadage.clihelpers as clihelpers
 from yadage.controllers import PersistentController, VariableProxy, setup_controller_fromstring
 from yadage.yadagemodels import YadageWorkflow
+
 
 # ------------------------------------------------------------------------------
 #
@@ -95,33 +97,49 @@ class WorkflowInstance(object):
             load_state_custom_deserializer,
             backend=backend
         )
-        try:
-            self.controller = PersistentController(self)
-            self.controller.backend = backend
-            #    pass
-            # Get the list of identifier for rules that are applicable.
-            self.applicable_rules = self.controller.applicable_rules()
-            # Get list of identifier for submittable nodes
-            self.submittable_nodes = self.controller.submittable_nodes()
-            # Set the workflow status
-            if self.controller.validate():
-                if self.controller.finished():
-                    if self.controller.successful():
-                        self.status = WORKFLOW_SUCCESS
-                    else:
-                        self.status = WORKFLOW_ERROR
+        #try:
+        self.controller = PersistentController(self)
+        self.controller.backend = backend
+        # Get the list of identifier for rules that are applicable.
+        self.applicable_rules = self.controller.applicable_rules()
+        # Get list of identifier for submittable nodes
+        self.submittable_nodes = self.controller.submittable_nodes()
+        if self.controller.validate():
+            if self.controller.finished():
+                if self.controller.successful():
+                    self.status = WORKFLOW_SUCCESS
                 else:
-                    if len(self.applicable_rules) > 0 or len(self.submittable_nodes) > 0:
-                        self.status = WORKFLOW_IDLE
-                    else:
-                        self.status = WORKFLOW_RUNNING
+                    self.status = WORKFLOW_ERROR
             else:
-                self.status = WORKFLOW_ERROR
-        except AttributeError as ex:
-            # Set status to error if the workflow cannot be initialized
-            self.applicable_rules = []
-            self.submittable_nodes = []
+                if len(self.applicable_rules) > 0 or len(self.submittable_nodes) > 0:
+                    self.status = WORKFLOW_IDLE
+                else:
+                    self.status = WORKFLOW_RUNNING
+        else:
             self.status = WORKFLOW_ERROR
+        #except AttributeError as ex:
+            #print ex
+            # Set status to error if the workflow cannot be initialized
+        #    self.applicable_rules = []
+        #    self.submittable_nodes = []
+        # Set the workflow status
+        #node_states = set()
+        #for node in self.json()['dag']['nodes']:
+        #    node_state = node['state']
+        #    if node_state == DEFINED:
+        #        if not node['timestamps']['submit'] is None:
+        #            node_state = RUNNING
+        #    node_states.add(str(node_state))
+        #if str(FAILED) in node_states:
+        #    self.status = WORKFLOW_ERROR
+        #elif len(self.applicable_rules) > 0 or len(self.submittable_nodes) > 0:
+        #    self.status = WORKFLOW_IDLE
+        #elif str(RUNNING) in node_states:
+        #    self.status = WORKFLOW_RUNNING
+        #elif str(DEFINED) in node_states:
+        #    self.status = WORKFLOW_IDLE
+        #else:
+        #    self.status = WORKFLOW_SUCCESS
 
     def apply_rules(self, rule_instances):
         """Apply a given set of rule instances.
@@ -154,6 +172,8 @@ class WorkflowInstance(object):
         data : yadage.YadageWorkflow
             Yadage workflow object
         """
+        print 'COMMIT ' + str(self.wflowid)
+        #print data.json()
         self.db.update_Workflow(self.wflowid, data.json())
 
     def json(self):
@@ -219,8 +239,10 @@ class WorkflowRepository(object):
         self.store = MongoDBConnector(config)
         # Directory for workflow files
         self.workflow_dir = os.path.abspath(config['db.workdir'])
-        # Set the default Yadage backend. This implementation uses Celery
-        self.backend = pb.PacktivityBackend(packtivity_backend=CeleryBackend())
+
+    @property
+    def backend(self):
+        return pb.PacktivityBackend(packtivity_backend=CeleryBackend())
 
     def create_workflow(self, workflow_template, name, init_data):
         """Create a new workflow instance in the repository. Assigns the given

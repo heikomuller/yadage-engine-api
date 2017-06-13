@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import urllib
+import logging
 
 from hateoas import UrlFactory, self_reference, hateoas_reference, HATEOAS_LINKS
 from workflow import WorkflowRepository, WORKFLOW_STATES
@@ -144,7 +145,12 @@ class YADAGEEngine(object):
             Workflow instance
         """
         # Read the template at the given template URL
-        workflow_def = json.loads(urllib.urlopen(workflow_template_url).read())
+        try:
+            workflow_def = json.loads(urllib.urlopen(workflow_template_url).read())
+        except IOError as ex:
+            logging.info('Fetching ' + workflow_template_url)
+            logging.exception(ex)
+            raise ValueError(ex)
         # Construct dictionary of input data
         init_data = {}
         if 'parameters' in workflow_def:
@@ -211,7 +217,10 @@ class YADAGEEngine(object):
         """
         # Remove workflow directory if workflow exists
         if self.db.delete_workflow(workflow_id):
-            shutil.rmtree(os.path.join(self.workflow_dir, workflow_id))
+            try:
+                shutil.rmtree(os.path.join(self.workflow_dir, workflow_id))
+            except OSError as ex:
+                pass
             return True
         else:
             return False
